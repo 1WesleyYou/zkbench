@@ -24,4 +24,5 @@ func main() {
 	b.Config = config
 	b.Init()
 	b.SmokeTest()
+	b.Run()
 }

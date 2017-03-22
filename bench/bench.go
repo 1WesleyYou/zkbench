@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samuel/go-zookeeper/zk"
 	"sync"
-	// "golang.org/x/net/context"
 
 	"zkbench"
 )
@@ -23,6 +23,11 @@ const (
 	CLEANUP = 1 << iota
 )
 
+var (
+	zkCreateFlags = int32(0)
+	zkCreateACL   = zk.WorldACL(zk.PermAll)
+)
+
 type benchConfig struct {
 	namespace        string
 	nclients         int
@@ -34,20 +39,26 @@ type benchConfig struct {
 	value_size_bytes int64
 }
 
-type operand struct {
+type request struct {
 	key   string
-	value string
+	value []byte
 }
 
 type benchRun struct {
+	mu       sync.RWMutex
+	rqch     chan request
+	handlers []ReqHandler
+	wg       sync.WaitGroup
+	reqGen   func(chan<- request)
 }
+
+type ReqHandler func(req *request) error
 
 type Benchmark struct {
 	Config *zkbench.Config
 
 	clients     []*Client
 	initialized bool
-	wg          sync.WaitGroup
 
 	benchConfig
 }
@@ -93,6 +104,41 @@ func (self *Benchmark) Run() {
 	if !self.initialized {
 		log.Fatal("Must initialize benchmark first")
 	}
+
+	rqch := make(chan request, self.nclients)
+	defer close(rqch)
+	chs := self.newCreateHandlers()
+	reqGen := func(rqch chan<- request) { self.seqRequests(rqch) }
+	br := &benchRun{
+		rqch:     rqch,
+		handlers: chs,
+		wg:       sync.WaitGroup{},
+		reqGen:   reqGen,
+	}
+	self.startRequests(br)
+	fmt.Println("Created")
+
+	br.handlers = self.newWriteHandlers()
+	self.startRequests(br)
+	fmt.Println("Written")
+}
+
+func (self *Benchmark) startRequests(br *benchRun) {
+	for i := range br.handlers {
+		br.wg.Add(1)
+		go func(handler ReqHandler) {
+			defer br.wg.Done()
+			for req := range br.rqch {
+				fmt.Println(req.key + ":" + string(req.value))
+				err := handler(&req)
+				if err != nil {
+					log.Println("Error:", err)
+				}
+			}
+		}(br.handlers[i])
+	}
+	br.reqGen(br.rqch)
+	br.wg.Wait()
 }
 
 func (self *Benchmark) SmokeTest() {
@@ -105,21 +151,43 @@ func (self *Benchmark) SmokeTest() {
 	}
 }
 
-func writeRequests(b *Benchmark, c *Client, opch chan<- operand) {
-	val := randBytes(b.value_size_bytes)
-	sval := string(val)
+func (self *Benchmark) seqRequests(rqch chan<- request) {
+	val := randBytes(self.value_size_bytes)
 
-	var wg sync.WaitGroup
-	defer func() {
-		close(opch)
-		wg.Wait()
-	}()
-
-	for i := int64(0); i < b.nrequests; i++ {
-		k := sequentialKey(b.key_size_bytes, i)
-		fmt.Println(k)
-		opch <- operand{key: b.namespace + "/" + k, value: sval}
+	for i := int64(0); i < self.nrequests; i++ {
+		k := sequentialKey(self.key_size_bytes, i)
+		rqch <- request{key: self.namespace + "/" + k, value: val}
 	}
+}
+
+func newWriteHandler(client *Client) ReqHandler {
+	return func(req *request) error {
+		_, err := client.Conn.Set(req.key, req.value, int32(-1))
+		return err
+	}
+}
+
+func (self *Benchmark) newWriteHandlers() []ReqHandler {
+	handlers := make([]ReqHandler, self.nclients)
+	for i, client := range self.clients {
+		handlers[i] = newWriteHandler(client)
+	}
+	return handlers
+}
+
+func newCreateHandler(client *Client) ReqHandler {
+	return func(req *request) error {
+		_, err := client.Conn.Create(req.key, req.value, zkCreateFlags, zkCreateACL)
+		return err
+	}
+}
+
+func (self *Benchmark) newCreateHandlers() []ReqHandler {
+	handlers := make([]ReqHandler, self.nclients)
+	for i, client := range self.clients {
+		handlers[i] = newCreateHandler(client)
+	}
+	return handlers
 }
 
 func sequentialKey(size, num int64) string {
