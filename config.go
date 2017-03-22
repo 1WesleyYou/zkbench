@@ -76,6 +76,14 @@ func (self *Config) GetInt(key string) (int, error) {
 	return strconv.Atoi(val)
 }
 
+func (self *Config) GetInt64(key string) (int64, error) {
+	val, ok := self.KVs[key]
+	if !ok {
+		return -1, fmt.Errorf("Key %s does not exist", key)
+	}
+	return strconv.ParseInt(val, 10, 64)
+}
+
 func (self *Config) GetBool(key string) (bool, error) {
 	val, ok := self.KVs[key]
 	if !ok {
