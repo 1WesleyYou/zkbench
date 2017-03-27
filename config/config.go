@@ -1,4 +1,4 @@
-package zkbench
+package config
 
 import (
 	"bufio"

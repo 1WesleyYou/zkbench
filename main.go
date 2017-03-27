@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"zkbench"
-	"zkbench/bench"
+	zkb "zkbench/bench"
+	zkc "zkbench/config"
 )
 
 var (
@@ -15,14 +15,15 @@ var (
 
 func main() {
 	flag.Parse()
-	config, err := zkbench.ParseConfig(*conf)
+	config, err := zkc.ParseConfig(*conf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fail to parse config: %v\n", err)
 		os.Exit(1)
 	}
-	var b bench.Benchmark
+	var b zkb.Benchmark
 	b.Config = config
 	b.Init()
-	b.SmokeTest()
+	// b.SmokeTest()
 	b.Run()
+	// b.Done()
 }
