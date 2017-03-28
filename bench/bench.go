@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	mrand "math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -63,14 +64,22 @@ func (self *Benchmark) Init() {
 	self.initialized = true
 }
 
-func (self *Benchmark) Run() {
+func (self *Benchmark) Run(outprefix string) {
 	if !self.initialized {
 		log.Fatal("Must initialize benchmark first")
 	}
-	self.runBench(WARM_UP)
-	self.runBench(CREATE)
-	self.runBench(WRITE)
-	self.runBench(READ)
+	f, err := os.OpenFile(outprefix+"summary.dat", os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		self.Done()
+		panic(err)
+	}
+	self.runBench(WARM_UP, 1, f)
+	self.runBench(CREATE, 1, f)
+	self.runBench(WRITE, 1, f)
+	self.runBench(READ, 1, f)
+	self.runBench(WRITE, 2, f)
+	self.runBench(WRITE, 3, f)
+	f.Close()
 	self.Done()
 }
 
@@ -108,12 +117,13 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 	return &stat
 }
 
-func (self *Benchmark) runBench(btype BenchType) {
+func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 	var wg sync.WaitGroup
 	key := sameKey(self.key_size_bytes)
 	val := randBytes(self.value_size_bytes)
 	var empty []byte
-	for _, client := range self.clients {
+	clientStats := make([]*BenchStat, self.nclients)
+	for cid := range self.clients {
 		var handler ReqHandler
 		var generator ReqGenerator
 		switch btype {
@@ -162,13 +172,19 @@ func (self *Benchmark) runBench(btype BenchType) {
 			}
 		}
 		wg.Add(1)
-		go func(client *Client, generator ReqGenerator, handler ReqHandler) {
+		go func(cid int, generator ReqGenerator, handler ReqHandler) {
+			client := self.clients[cid]
 			stat := self.processRequests(client, btype, self.samekey, generator, handler)
-			log.Printf("[Client %s]: done bench %s, %v\n", client.Id, btype.String(), *stat)
+			log.Printf("[Client %s]: done bench %s\n", client.Id, btype.String())
+			clientStats[cid] = stat
 			wg.Done()
-		}(client, generator, handler)
+		}(cid, generator, handler)
 	}
 	wg.Wait()
+	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
+	for cid, stat := range clientStats {
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", cid, bstr, stat.Ops, stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(), stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
+	}
 }
 
 func (self *Benchmark) SmokeTest() {

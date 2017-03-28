@@ -4,12 +4,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	zkb "zkbench/bench"
 )
 
 var (
-	conf = flag.String("conf", "bench.conf", "Benchmark configuration file")
+	conf      = flag.String("conf", "bench.conf", "Benchmark configuration file")
+	outprefix = flag.String("outprefix", "zkbench", "Benchmark stat filename prefix")
 )
 
 func main() {
@@ -23,5 +25,7 @@ func main() {
 	b.BenchmarkConfig = *config
 	b.Init()
 	b.SmokeTest()
-	b.Run()
+	current := time.Now()
+	prefix := *outprefix + "-" + current.Format("2006-01-02-15_04_05") + "-"
+	b.Run(prefix)
 }

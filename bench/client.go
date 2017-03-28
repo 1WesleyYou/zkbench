@@ -2,7 +2,7 @@ package bench
 
 import (
 	"fmt"
-	"log"
+	// "log"
 	"path"
 	"time"
 
@@ -72,13 +72,13 @@ func (self *Client) DeleteR(rpath string) error {
 	}
 	for _, child := range children {
 		fpath := self.Namespace + "/" + child
-		log.Printf("Delete %s\n", fpath)
+		// log.Printf("Delete %s\n", fpath)
 		err := self.Conn.Delete(fpath, -1)
 		if err != nil {
 			return err
 		}
 	}
-	log.Printf("Delete %s\n", rpath)
+	// log.Printf("Delete %s\n", rpath)
 	return self.Conn.Delete(rpath, -1)
 }
 

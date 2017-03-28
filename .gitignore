@@ -1,3 +1,5 @@
 *.swp
 build
 zkbench
+*.log
+*.dat
