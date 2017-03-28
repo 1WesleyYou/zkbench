@@ -19,33 +19,9 @@ const (
 	DELETE            = 1 << iota
 )
 
-type benchConfig struct {
-	namespace        string
-	nclients         int
-	servers          []string
-	endpoints        []string
-	cleanup          bool
-	nrequests        int64
-	key_size_bytes   int64
-	value_size_bytes int64
-}
-
 type Request struct {
 	key   string
 	value []byte
-}
-
-type request struct {
-	key   string
-	value []byte
-}
-
-type benchRun struct {
-	mu       sync.RWMutex
-	rqch     chan request
-	handlers []ReqHandler
-	wg       sync.WaitGroup
-	reqGen   func(chan<- request)
 }
 
 type ReqHandler func(c *Client, r *Request) error
@@ -95,24 +71,7 @@ func (self *Benchmark) Run() {
 	self.runBench(CREATE)
 	self.runBench(WRITE)
 	self.runBench(READ)
-	/*
-		rqch := make(chan request, self.nclients)
-		defer close(rqch)
-		chs := self.newCreateHandlers()
-		reqGen := func(rqch chan<- request) { self.seqRequests(rqch) }
-		br := &benchRun{
-			rqch:     rqch,
-			handlers: chs,
-			wg:       sync.WaitGroup{},
-			reqGen:   reqGen,
-		}
-		self.startRequests(br)
-		fmt.Println("Created")
-
-		br.handlers = self.newWriteHandlers()
-		self.startRequests(br)
-		fmt.Println("Written")
-	*/
+	self.Done()
 }
 
 func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
@@ -212,26 +171,6 @@ func (self *Benchmark) runBench(btype BenchType) {
 	wg.Wait()
 }
 
-func (self *Benchmark) startRequests(br *benchRun) {
-	/*
-		for i := range br.handlers {
-			br.wg.Add(1)
-			go func(handler ReqHandler) {
-				defer br.wg.Done()
-				for req := range br.rqch {
-					fmt.Println(req.key + ":" + string(req.value))
-					err := handler(&Request{req.key, req.value})
-					if err != nil {
-						log.Println("Error:", err)
-					}
-				}
-			}(br.handlers[i])
-		}
-		br.reqGen(br.rqch)
-		br.wg.Wait()
-	*/
-}
-
 func (self *Benchmark) SmokeTest() {
 	for _, client := range self.clients {
 		children, stat, _, err := client.Conn.ChildrenW(self.namespace)
@@ -250,15 +189,6 @@ func (self *Benchmark) Done() {
 		if err != nil {
 			log.Println("Error: ", err)
 		}
-	}
-}
-
-func (self *Benchmark) seqRequests(rqch chan<- request) {
-	val := randBytes(self.value_size_bytes)
-
-	for i := int64(0); i < self.nrequests; i++ {
-		k := sequentialKey(self.key_size_bytes, i)
-		rqch <- request{key: self.namespace + "/" + k, value: val}
 	}
 }
 

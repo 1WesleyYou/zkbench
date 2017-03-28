@@ -24,5 +24,4 @@ func main() {
 	b.Init()
 	b.SmokeTest()
 	b.Run()
-	b.Done()
 }
