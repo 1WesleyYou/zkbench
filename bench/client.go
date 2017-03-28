@@ -2,6 +2,7 @@ package bench
 
 import (
 	"fmt"
+	"log"
 	"path"
 	"time"
 
@@ -21,7 +22,82 @@ var (
 	zkCreateACL   = zk.WorldACL(zk.PermAll)
 )
 
+func (self *Client) Read(rpath string) ([]byte, *zk.Stat, error) {
+	if len(rpath) == 0 {
+		return self.Conn.Get(self.Namespace)
+	}
+	return self.Conn.Get(self.Namespace + "/" + rpath)
+}
+
+func (self *Client) Write(rpath string, data []byte) error {
+	var err error
+	if len(rpath) == 0 {
+		_, err = self.Conn.Set(self.Namespace, data, -1)
+	} else {
+		_, err = self.Conn.Set(self.Namespace+"/"+rpath, data, -1)
+	}
+	return err
+}
+
+func (self *Client) ReadWrite(rpath string, data []byte) error {
+	if len(rpath) == 0 {
+		rpath = self.Namespace
+	} else {
+		rpath = self.Namespace + "/" + rpath
+	}
+	_, stat, err := self.Conn.Get(rpath)
+	if err != nil {
+		return err
+	}
+	_, err = self.Conn.Set(rpath, data, stat.Version)
+	return err
+}
+
+func (self *Client) Delete(rpath string) error {
+	if len(rpath) == 0 {
+		return self.Conn.Delete(self.Namespace, 0)
+	}
+	return self.Conn.Delete(self.Namespace+"/"+rpath, 0)
+}
+
+func (self *Client) DeleteR(rpath string) error {
+	if len(rpath) == 0 {
+		rpath = self.Namespace
+	} else {
+		rpath = self.Namespace + "/" + rpath
+	}
+	children, _, err := self.Conn.Children(rpath)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		fpath := self.Namespace + "/" + child
+		log.Printf("Delete %s\n", fpath)
+		err := self.Conn.Delete(fpath, -1)
+		if err != nil {
+			return err
+		}
+	}
+	log.Printf("Delete %s\n", rpath)
+	return self.Conn.Delete(rpath, -1)
+}
+
+func (self *Client) Create(rpath string, data []byte) error {
+	if len(rpath) == 0 {
+		rpath = self.Namespace
+	} else {
+		rpath = self.Namespace + "/" + rpath
+	}
+	_, err := self.Conn.Create(rpath, data, zkCreateFlags, zkCreateACL)
+	return err
+}
+
 func (self *Client) CreateR(rpath string, data []byte) error {
+	if len(rpath) == 0 {
+		rpath = self.Namespace
+	} else {
+		rpath = self.Namespace + "/" + rpath
+	}
 	var subps []string
 	if len(rpath) > 0 && rpath != "/" {
 		subps = append(subps, rpath)
@@ -33,10 +109,14 @@ func (self *Client) CreateR(rpath string, data []byte) error {
 	l := len(subps) - 1
 	var err error
 	for i := range subps {
+		subp := subps[l-i]
 		if i != l {
-			_, err = self.CreateIfNotExist(subps[l-i], []byte(""))
+			exists, _, err := self.Conn.Exists(subp)
+			if err == nil && !exists {
+				_, err = self.Conn.Create(subp, []byte(""), zkCreateFlags, zkCreateACL)
+			}
 		} else {
-			_, err = self.Conn.Create(subps[0], data, zkCreateFlags, zkCreateACL)
+			_, err = self.Conn.Create(subp, data, zkCreateFlags, zkCreateACL)
 		}
 		if err != nil {
 			return err
@@ -45,17 +125,19 @@ func (self *Client) CreateR(rpath string, data []byte) error {
 	return nil
 }
 
-func (self *Client) Create(rpath string, data []byte) error {
-	_, err := self.Conn.Create(self.Namespace+"/"+rpath, data, zkCreateFlags, zkCreateACL)
-	return err
-}
-
-func (self *Client) Set(rpath string, data []byte) error {
-	_, err := self.Conn.Set(rpath, data, int32(-1))
-	return err
+func (self *Client) FullPath(rpath string) string {
+	if len(rpath) == 0 {
+		return self.Namespace
+	}
+	return self.Namespace + "/" + rpath
 }
 
 func (self *Client) CreateIfNotExist(rpath string, data []byte) (bool, error) {
+	if len(rpath) == 0 {
+		rpath = self.Namespace
+	} else {
+		rpath = self.Namespace + "/" + rpath
+	}
 	exists, _, err := self.Conn.Exists(rpath)
 	if err != nil {
 		return false, err
@@ -73,14 +155,19 @@ func (self *Client) Setup() error {
 		return err
 	}
 	if !exists {
-		err = self.CreateR(self.Namespace, []byte("I am client "+self.Id))
+		err = self.CreateR("", []byte("I am client "+self.Id))
 	}
 	return err
 }
 
-func (self *Client) Cleanup() {
-	self.Conn.Delete(self.Namespace, 0)
+func (self *Client) Cleanup() error {
+	if self.Conn == nil {
+		return nil
+	}
+	err := self.DeleteR("")
 	self.Conn.Close()
+	self.Conn = nil
+	return err
 }
 
 func NewClient(id int, server string, endpoint string, namespace string) (*Client, error) {

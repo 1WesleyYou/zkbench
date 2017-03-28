@@ -4,13 +4,9 @@ import (
 	"fmt"
 	"log"
 	mrand "math/rand"
-	"sort"
 	"strings"
-	"time"
-
 	"sync"
-
-	zkc "zkbench/config"
+	"time"
 )
 
 type BenchType uint32
@@ -21,7 +17,6 @@ const (
 	WRITE             = 1 << iota
 	CREATE            = 1 << iota
 	DELETE            = 1 << iota
-	CLEANUP           = 1 << iota
 )
 
 type benchConfig struct {
@@ -33,6 +28,11 @@ type benchConfig struct {
 	nrequests        int64
 	key_size_bytes   int64
 	value_size_bytes int64
+}
+
+type Request struct {
+	key   string
+	value []byte
 }
 
 type request struct {
@@ -48,51 +48,41 @@ type benchRun struct {
 	reqGen   func(chan<- request)
 }
 
-type ReqHandler func(key string, value []byte) error
+type ReqHandler func(c *Client, r *Request) error
+type ReqGenerator func(iter int64) *Request
 
 type Benchmark struct {
-	Config *zkc.Config
-
 	clients     []*Client
 	initialized bool
-
-	benchConfig
+	BenchmarkConfig
 }
 
-func (self *Benchmark) parseConfig() {
-	namespace, err := self.Config.GetString("namespace")
-	checkErr(err)
-	nclients := checkPosInt(self.Config, "clients")
-	nrequests := checkPosInt64(self.Config, "requests")
-	key_size_bytes := checkPosInt64(self.Config, "key_size_bytes")
-	value_size_bytes := checkPosInt64(self.Config, "value_size_bytes")
-	cleanup, err := self.Config.GetBool("cleanup")
-	checkErr(err)
-	servers := self.Config.GetKeys("server")
-	sort.Strings(servers)
-	endpoints := make([]string, len(servers))
-	for i, server := range servers {
-		endpoints[i], _ = self.Config.GetString(server)
-		fmt.Println(server + "=" + endpoints[i])
+func (self BenchType) String() string {
+	switch self {
+	case WARM_UP:
+		return "WARM_UP"
+	case READ:
+		return "READ"
+	case WRITE:
+		return "WRITE"
+	case CREATE:
+		return "CREATE"
+	default:
+		return "UNKNOWN"
 	}
-	checkErr(err)
-
-	self.namespace = "/" + namespace
-	self.nclients = nclients
-	self.servers = servers
-	self.endpoints = endpoints
-	self.cleanup = cleanup
-	self.nrequests = nrequests
-	self.key_size_bytes = key_size_bytes
-	self.value_size_bytes = value_size_bytes
-	fmt.Println(string(randBytes(self.value_size_bytes)))
 }
 
 func (self *Benchmark) Init() {
-	self.parseConfig()
 	clients, err := NewClients(self.servers, self.endpoints, self.nclients, self.namespace)
 	checkErr(err)
 	self.clients = clients
+
+	for _, client := range self.clients {
+		err := client.Setup()
+		if err != nil {
+			panic(err)
+		}
+	}
 
 	self.initialized = true
 }
@@ -101,13 +91,10 @@ func (self *Benchmark) Run() {
 	if !self.initialized {
 		log.Fatal("Must initialize benchmark first")
 	}
-	for _, client := range self.clients {
-		err := client.Setup()
-		if err != nil {
-			panic(err)
-		}
-	}
-
+	self.runBench(WARM_UP)
+	self.runBench(CREATE)
+	self.runBench(WRITE)
+	self.runBench(READ)
 	/*
 		rqch := make(chan request, self.nclients)
 		defer close(rqch)
@@ -128,89 +115,141 @@ func (self *Benchmark) Run() {
 	*/
 }
 
-func (self *Benchmark) runBench(btype BenchType) {
-	val := randBytes(self.value_size_bytes)
-	var wg sync.WaitGroup
-	for _, client := range self.clients {
-		wg.Add(1)
-		var handler ReqHandler
-		go func(c *Client, data []byte, handler ReqHandler) {
-			defer wg.Done()
-			for i := int64(0); i < self.nrequests; i++ {
-				k := sequentialKey(self.key_size_bytes, i)
-				handler(c.Namespace+"/"+k, data)
-			}
-		}(client, val, handler)
+func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
+	var req *Request
+	var stat BenchStat
+	stat.Latencies = make([]time.Duration, self.nrequests)
+	if same {
+		req = generator(-1)
 	}
-	wg.Wait()
+	bstr := btype.String()
+	for i := int64(0); i < self.nrequests; i++ {
+		stat.Ops++
+		if !same {
+			req = generator(i)
+		}
+		begin := time.Now()
+		err := handler(client, req)
+		d := time.Since(begin)
+		if err != nil {
+			stat.Errors++
+			fmt.Printf("Error in processing %s request for key %s: %v\n", bstr, req.key, err)
+		}
+		stat.Latencies[i] = d
+		if i == 0 || d < stat.MinLatency {
+			stat.MinLatency = d
+		}
+		if i == 0 || d > stat.MaxLatency {
+			stat.MaxLatency = d
+		}
+		stat.TotalLatency += d
+	}
+	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
+	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
+	return &stat
+}
 
-	/*
+func (self *Benchmark) runBench(btype BenchType) {
+	var wg sync.WaitGroup
+	key := sameKey(self.key_size_bytes)
+	val := randBytes(self.value_size_bytes)
+	var empty []byte
+	for _, client := range self.clients {
+		var handler ReqHandler
+		var generator ReqGenerator
 		switch btype {
 		case WARM_UP:
-
+			generator = func(iter int64) *Request { return &Request{} }
+			handler = func(c *Client, r *Request) error {
+				_, _, err := c.Read(r.key)
+				return err
+			}
 		case READ:
-
+			if self.samekey {
+				generator = func(iter int64) *Request { return &Request{key, empty} }
+			} else {
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+			}
+			handler = func(c *Client, r *Request) error {
+				_, _, err := c.Read(r.key)
+				return err
+			}
 		case WRITE:
-			handler = newWriteHandler(client)
-
+			if self.samekey {
+				generator = func(iter int64) *Request { return &Request{key, val} }
+			} else {
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), val} }
+			}
+			handler = func(c *Client, r *Request) error {
+				return c.Write(r.key, r.value)
+			}
 		case CREATE:
-
+			if self.samekey {
+				generator = func(iter int64) *Request { return &Request{key, empty} }
+			} else {
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+			}
+			handler = func(c *Client, r *Request) error {
+				return c.Create(r.key, r.value)
+			}
 		case DELETE:
-
-		case CLEANUP:
+			if self.samekey {
+				generator = func(iter int64) *Request { return &Request{key, empty} }
+			} else {
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+			}
+			handler = func(c *Client, r *Request) error {
+				return c.Delete(r.key)
+			}
 		}
-	*/
+		wg.Add(1)
+		go func(client *Client, generator ReqGenerator, handler ReqHandler) {
+			stat := self.processRequests(client, btype, self.samekey, generator, handler)
+			log.Printf("[Client %s]: done bench %s, %v\n", client.Id, btype.String(), *stat)
+			wg.Done()
+		}(client, generator, handler)
+	}
+	wg.Wait()
 }
 
 func (self *Benchmark) startRequests(br *benchRun) {
-	for i := range br.handlers {
-		br.wg.Add(1)
-		go func(handler ReqHandler) {
-			defer br.wg.Done()
-			for req := range br.rqch {
-				fmt.Println(req.key + ":" + string(req.value))
-				err := handler(req.key, req.value)
-				if err != nil {
-					log.Println("Error:", err)
-				}
-			}
-		}(br.handlers[i])
-	}
-	br.reqGen(br.rqch)
-	br.wg.Wait()
-}
-
-func (self *Benchmark) SmokeTest() {
 	/*
-		tryCreate := true
-		var err error
-		for _, client := range self.clients {
-			if tryCreate {
-				_, err = client.Create(self.namespace, []byte(client.Id))
-			}
-			if err == nil {
-				tryCreate = false
-			} else {
-				exists, _, _ := client.Conn.Exists(self.namespace)
-				if exists {
-					tryCreate = false
+		for i := range br.handlers {
+			br.wg.Add(1)
+			go func(handler ReqHandler) {
+				defer br.wg.Done()
+				for req := range br.rqch {
+					fmt.Println(req.key + ":" + string(req.value))
+					err := handler(&Request{req.key, req.value})
+					if err != nil {
+						log.Println("Error:", err)
+					}
 				}
-			}
-			if !tryCreate {
-				client.Conn.Create(client.Namespace, []byte(""))
-			}
-			children, stat, _, err := client.Conn.ChildrenW(self.namespace)
-			if err != nil {
-				panic(err)
-			}
-			fmt.Printf("[client %s]: %+v %+v\n", client.Id, children, stat)
+			}(br.handlers[i])
 		}
+		br.reqGen(br.rqch)
+		br.wg.Wait()
 	*/
 }
 
-func (self *Benchmark) Done() {
+func (self *Benchmark) SmokeTest() {
 	for _, client := range self.clients {
-		client.Cleanup()
+		children, stat, _, err := client.Conn.ChildrenW(self.namespace)
+		if err != nil {
+			panic(err)
+		}
+		log.Printf("[Client %s]: %+v %+v\n", client.Id, children, stat)
+	}
+}
+
+func (self *Benchmark) Done() {
+	var client *Client
+	for _, client = range self.clients {
+		err := client.Cleanup()
+		log.Printf("Clean up client " + client.Id)
+		if err != nil {
+			log.Println("Error: ", err)
+		}
 	}
 }
 
@@ -223,20 +262,8 @@ func (self *Benchmark) seqRequests(rqch chan<- request) {
 	}
 }
 
-func (self *Benchmark) newWriteHandlers() []ReqHandler {
-	handlers := make([]ReqHandler, self.nclients)
-	for i, client := range self.clients {
-		handlers[i] = client.Set
-	}
-	return handlers
-}
-
-func (self *Benchmark) newCreateHandlers() []ReqHandler {
-	handlers := make([]ReqHandler, self.nclients)
-	for i, client := range self.clients {
-		handlers[i] = client.Create
-	}
-	return handlers
+func sameKey(size int64) string {
+	return strings.Repeat("x", int(size))
 }
 
 func sequentialKey(size, num int64) string {
@@ -276,26 +303,4 @@ func randBytes(bytesN int64) []byte {
 		remain--
 	}
 	return b
-}
-
-func checkPosInt64(config *zkc.Config, key string) int64 {
-	val, err := config.GetInt64(key)
-	if err != nil {
-		log.Fatal("Error:", err)
-	}
-	if val <= 0 {
-		log.Fatalf("parameter '%s' must be positive\n", key)
-	}
-	return val
-}
-
-func checkPosInt(config *zkc.Config, key string) int {
-	val, err := config.GetInt(key)
-	if err != nil {
-		log.Fatal("Error:", err)
-	}
-	if val <= 0 {
-		log.Fatalf("parameter '%s' must be positive\n", key)
-	}
-	return val
 }
