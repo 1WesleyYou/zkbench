@@ -80,7 +80,6 @@ func (self *Benchmark) Run(outprefix string) {
 	self.runBench(WRITE, 2, f)
 	self.runBench(WRITE, 3, f)
 	f.Close()
-	self.Done()
 }
 
 func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
