@@ -191,6 +191,8 @@ func (self *Client) Reconnect() error {
 	if err != nil {
 		return err
 	}
+	var l ConnLogger
+	conn.SetLogger(&l)
 	self.Conn = conn
 	return nil
 }
