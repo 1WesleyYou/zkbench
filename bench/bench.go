@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samuel/go-zookeeper/zk"
 )
 
 type BenchType uint32
@@ -101,6 +103,9 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 		if err != nil {
 			stat.Errors++
 			fmt.Printf("Error in processing %s request for key %s: %v\n", bstr, req.key, err)
+			if err == zk.ErrNoServer {
+				client.Reconnect()
+			}
 		}
 		stat.Latencies[i] = d
 		if i == 0 || d < stat.MinLatency {

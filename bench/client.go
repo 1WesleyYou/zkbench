@@ -22,6 +22,12 @@ var (
 	zkCreateACL   = zk.WorldACL(zk.PermAll)
 )
 
+type ConnLogger int32
+
+func (l *ConnLogger) Printf(string, ...interface{}) {
+	// do not print for now
+}
+
 func (self *Client) Read(rpath string) ([]byte, *zk.Stat, error) {
 	if len(rpath) == 0 {
 		return self.Conn.Get(self.Namespace)
@@ -170,11 +176,27 @@ func (self *Client) Cleanup() error {
 	return err
 }
 
+func (self *Client) Reconnect() error {
+	if self.Conn == nil {
+		return nil
+	}
+	self.Conn.Close()
+	self.Conn = nil
+	conn, _, err := zk.Connect([]string{self.EndPoint}, time.Second)
+	if err != nil {
+		return err
+	}
+	self.Conn = conn
+	return nil
+}
+
 func NewClient(id int, server string, endpoint string, namespace string) (*Client, error) {
 	conn, _, err := zk.Connect([]string{endpoint}, time.Second)
 	if err != nil {
 		return nil, err
 	}
+	var l ConnLogger
+	conn.SetLogger(&l)
 	sid := fmt.Sprintf("%d", id)
 	return &Client{Id: sid, Server: server, Namespace: namespace + "/client" + sid, EndPoint: endpoint, Conn: conn}, nil
 }
