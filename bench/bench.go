@@ -198,12 +198,22 @@ func (self *Benchmark) SmokeTest() {
 
 func (self *Benchmark) Done() {
 	var client *Client
-	for _, client = range self.clients {
-		err := client.Cleanup()
-		log.Printf("Clean up client " + client.Id)
-		if err != nil {
-			log.Println("Error: ", err)
+	var current []*Client = self.clients
+
+	for i := 0; i < 3; i = i + 1 {
+		var leftover []*Client
+		for _, client = range current {
+			log.Printf("Clean up client " + client.Id)
+			err := client.Cleanup()
+			if err != nil {
+				log.Println("Error: ", err)
+				leftover = append(leftover, client)
+			}
 		}
+		if len(leftover) == 0 {
+			break
+		}
+		current = leftover
 	}
 }
 
