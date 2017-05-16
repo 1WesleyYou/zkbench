@@ -53,7 +53,9 @@ func (self BenchType) String() string {
 
 func (self *Benchmark) Init() {
 	clients, err := NewClients(self.servers, self.endpoints, self.nclients, self.namespace)
-	checkErr(err)
+	if err != nil {
+		log.Fatal("Error:", err)
+	}
 	self.clients = clients
 
 	for _, client := range self.clients {
@@ -102,7 +104,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 		d := time.Since(begin)
 		if err != nil {
 			stat.Errors++
-			fmt.Printf("Error in processing %s request for key %s: %v\n", bstr, req.key, err)
+			client.Log("Error in processing %s request for key %s: %v", bstr, req.key, err)
 			if err == zk.ErrNoServer {
 				client.Reconnect()
 			}
@@ -179,7 +181,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 		go func(cid int, generator ReqGenerator, handler ReqHandler) {
 			client := self.clients[cid]
 			stat := self.processRequests(client, btype, self.samekey, generator, handler)
-			log.Printf("[Client %s]: done bench %s\n", client.Id, btype.String())
+			client.Log("done bench %s", btype.String())
 			clientStats[cid] = stat
 			wg.Done()
 		}(cid, generator, handler)
@@ -197,7 +199,7 @@ func (self *Benchmark) SmokeTest() {
 		if err != nil {
 			panic(err)
 		}
-		log.Printf("[Client %s]: %+v %+v\n", client.Id, children, stat)
+		client.Log("children: %+v; stat: %+v", children, stat)
 	}
 }
 
@@ -208,10 +210,10 @@ func (self *Benchmark) Done() {
 	for i := 0; i < 3; i = i + 1 {
 		var leftover []*Client
 		for _, client = range current {
-			log.Printf("Clean up client " + client.Id)
+			client.Log("clean up")
 			err := client.Cleanup()
 			if err != nil {
-				log.Println("Error: ", err)
+				client.Log("error in clean up: %v", err)
 				leftover = append(leftover, client)
 			}
 		}
@@ -233,12 +235,6 @@ func sequentialKey(size, num int64) string {
 	}
 	delta := int(size) - len(txt)
 	return strings.Repeat("0", delta) + txt
-}
-
-func checkErr(err error) {
-	if err != nil {
-		log.Fatal("Error:", err)
-	}
 }
 
 func randBytes(bytesN int64) []byte {

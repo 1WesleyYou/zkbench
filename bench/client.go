@@ -2,7 +2,7 @@ package bench
 
 import (
 	"fmt"
-	// "log"
+	"log"
 	"path"
 	"time"
 
@@ -26,6 +26,11 @@ type ConnLogger int32
 
 func (l *ConnLogger) Printf(string, ...interface{}) {
 	// do not print for now
+}
+
+func (self *Client) Log(spec string, args ...interface{}) {
+	prefix := fmt.Sprintf("[Client %s->%s]: %s\n", self.Id, self.EndPoint, spec)
+	log.Printf(prefix, args...)
 }
 
 func (self *Client) Read(rpath string) ([]byte, *zk.Stat, error) {
