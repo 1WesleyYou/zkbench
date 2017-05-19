@@ -33,7 +33,7 @@ type ReqGenerator func(iter int64) *Request
 type Benchmark struct {
 	clients     []*Client
 	initialized bool
-	BenchmarkConfig
+	BenchConfig
 }
 
 func (self BenchType) String() string {
@@ -52,7 +52,7 @@ func (self BenchType) String() string {
 }
 
 func (self *Benchmark) Init() {
-	clients, err := NewClients(self.servers, self.endpoints, self.nclients, self.namespace)
+	clients, err := NewClients(self.Servers, self.Endpoints, self.NClients, self.Namespace)
 	if err != nil {
 		log.Fatal("Error:", err)
 	}
@@ -77,23 +77,31 @@ func (self *Benchmark) Run(outprefix string) {
 		panic(err)
 	}
 	self.runBench(WARM_UP, 1, f)
-	self.runBench(CREATE, 1, f)
-	self.runBench(WRITE, 1, f)
-	self.runBench(READ, 1, f)
-	self.runBench(WRITE, 2, f)
-	self.runBench(WRITE, 3, f)
+	if self.Type&CREATE != 0 {
+		self.runBench(CREATE, 1, f)
+	}
+	if self.Type&WRITE != 0 {
+		self.runBench(WRITE, 1, f)
+	}
+	if self.Type&READ != 0 {
+		self.runBench(READ, 1, f)
+	}
+	if self.Type&WRITE != 0 {
+		self.runBench(WRITE, 2, f)
+		self.runBench(WRITE, 3, f)
+	}
 	f.Close()
 }
 
 func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
 	var req *Request
 	var stat BenchStat
-	stat.Latencies = make([]time.Duration, self.nrequests)
+	stat.Latencies = make([]time.Duration, self.NRequests)
 	if same {
 		req = generator(-1)
 	}
 	bstr := btype.String()
-	for i := int64(0); i < self.nrequests; i++ {
+	for i := int64(0); i < self.NRequests; i++ {
 		stat.Ops++
 		if !same {
 			req = generator(i)
@@ -124,10 +132,10 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 
 func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 	var wg sync.WaitGroup
-	key := sameKey(self.key_size_bytes)
-	val := randBytes(self.value_size_bytes)
+	key := sameKey(self.KeySizeBytes)
+	val := randBytes(self.ValueSizeBytes)
 	var empty []byte
-	clientStats := make([]*BenchStat, self.nclients)
+	clientStats := make([]*BenchStat, self.NClients)
 	for cid := range self.clients {
 		var handler ReqHandler
 		var generator ReqGenerator
@@ -139,38 +147,38 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 				return err
 			}
 		case READ:
-			if self.samekey {
+			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, empty} }
 			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
 			}
 			handler = func(c *Client, r *Request) error {
 				_, _, err := c.Read(r.key)
 				return err
 			}
 		case WRITE:
-			if self.samekey {
+			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, val} }
 			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), val} }
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), val} }
 			}
 			handler = func(c *Client, r *Request) error {
 				return c.Write(r.key, r.value)
 			}
 		case CREATE:
-			if self.samekey {
+			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, empty} }
 			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
 			}
 			handler = func(c *Client, r *Request) error {
 				return c.Create(r.key, r.value)
 			}
 		case DELETE:
-			if self.samekey {
+			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, empty} }
 			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.key_size_bytes, iter), empty} }
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
 			}
 			handler = func(c *Client, r *Request) error {
 				return c.Delete(r.key)
@@ -179,7 +187,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 		wg.Add(1)
 		go func(cid int, generator ReqGenerator, handler ReqHandler) {
 			client := self.clients[cid]
-			stat := self.processRequests(client, btype, self.samekey, generator, handler)
+			stat := self.processRequests(client, btype, self.SameKey, generator, handler)
 			client.Log("done bench %s", btype.String())
 			clientStats[cid] = stat
 			wg.Done()
@@ -195,7 +203,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 
 func (self *Benchmark) SmokeTest() {
 	for _, client := range self.clients {
-		children, stat, _, err := client.Conn.ChildrenW(self.namespace)
+		children, stat, _, err := client.Conn.ChildrenW(self.Namespace)
 		if err != nil {
 			panic(err)
 		}

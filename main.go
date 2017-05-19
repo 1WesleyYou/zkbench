@@ -13,7 +13,6 @@ var (
 	conf      = flag.String("conf", "bench.conf", "Benchmark configuration file")
 	outprefix = flag.String("outprefix", "zkbench", "Benchmark stat filename prefix")
 	purge     = flag.Bool("purge", false, "Purge all prior test data")
-	clean     = flag.Bool("clean", true, "clean up after test")
 )
 
 func main() {
@@ -23,8 +22,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Fail to parse config: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Println(zkb.TypeStr(config.Type))
 	b := new(zkb.Benchmark)
-	b.BenchmarkConfig = *config
+	b.BenchConfig = *config
 	b.Init()
 	if *purge {
 		fmt.Println("Start purging test data")
@@ -36,7 +36,7 @@ func main() {
 	current := time.Now()
 	prefix := *outprefix + "-" + current.Format("2006-01-02-15_04_05") + "-"
 	b.Run(prefix)
-	if *clean {
+	if b.Cleanup {
 		b.Done()
 	}
 }

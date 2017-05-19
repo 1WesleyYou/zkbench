@@ -7,19 +7,47 @@ import (
 	zkc "zkbench/config"
 )
 
-type BenchmarkConfig struct {
-	namespace        string
-	nclients         int
-	servers          []string
-	endpoints        []string
-	nrequests        int64
-	key_size_bytes   int64
-	value_size_bytes int64
-	samekey          bool
-	cleanup          bool
+type BenchConfig struct {
+	Namespace      string
+	NClients       int
+	Servers        []string
+	Endpoints      []string
+	Type           uint32
+	NRequests      int64
+	KeySizeBytes   int64
+	ValueSizeBytes int64
+	SameKey        bool
+	Cleanup        bool
 }
 
-func ParseConfig(path string) (*BenchmarkConfig, error) {
+var (
+	BENCHTYPEMAP map[rune]BenchType = map[rune]BenchType{
+		'c': CREATE,
+		'r': READ,
+		'u': WRITE,
+		'd': DELETE,
+	}
+)
+
+func TypeStr(btype uint32) string {
+	var types [4]byte
+	i := 0
+	if btype&CREATE != 0 {
+		types[i], i = 'c', i+1
+	}
+	if btype&READ != 0 {
+		types[i], i = 'r', i+1
+	}
+	if btype&WRITE != 0 {
+		types[i], i = 'u', i+1
+	}
+	if btype&DELETE != 0 {
+		types[i], i = 'd', i+1
+	}
+	return string(types[:i])
+}
+
+func ParseConfig(path string) (*BenchConfig, error) {
 	config, err := zkc.ParseConfig(path)
 	if err != nil {
 		return nil, fmt.Errorf("Fail to parse config: %v\n", err)
@@ -56,24 +84,41 @@ func ParseConfig(path string) (*BenchmarkConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	btypestr, err := config.GetString("type")
+	if err != nil {
+		return nil, err
+	}
+	if len(btypestr) > 4 {
+		return nil, fmt.Errorf("Bench type should be at most 4-char\n")
+	}
+	var btype uint32 = 0
+	for _, c := range btypestr {
+		t, ok := BENCHTYPEMAP[c]
+		if !ok {
+			return nil, fmt.Errorf("Unrecognized bench type\n")
+		}
+		btype = btype | uint32(t)
+	}
+
 	sort.Strings(servers)
 	endpoints := make([]string, len(servers))
 	for i, server := range servers {
 		endpoints[i], _ = config.GetString(server)
 		fmt.Println(server + "=" + endpoints[i])
 	}
-	benchconf := &BenchmarkConfig{
-		namespace:        "/" + namespace,
-		nclients:         nclients,
-		servers:          servers,
-		endpoints:        endpoints,
-		nrequests:        nrequests,
-		key_size_bytes:   key_size_bytes,
-		value_size_bytes: value_size_bytes,
-		samekey:          samekey,
-		cleanup:          cleanup,
+	benchconf := &BenchConfig{
+		Namespace:      "/" + namespace,
+		NClients:       nclients,
+		Servers:        servers,
+		Endpoints:      endpoints,
+		Type:           btype,
+		NRequests:      nrequests,
+		KeySizeBytes:   key_size_bytes,
+		ValueSizeBytes: value_size_bytes,
+		SameKey:        samekey,
+		Cleanup:        cleanup,
 	}
-	fmt.Println(string(randBytes(value_size_bytes)))
+	fmt.Println("Random value: " + string(randBytes(value_size_bytes)))
 	return benchconf, nil
 }
 
