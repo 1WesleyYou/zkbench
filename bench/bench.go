@@ -74,7 +74,6 @@ func (self *Benchmark) Run(outprefix string) {
 	}
 	f, err := os.OpenFile(outprefix+"summary.dat", os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		self.Done()
 		panic(err)
 	}
 	self.runBench(WARM_UP, 1, f)
@@ -188,6 +187,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File) {
 	}
 	wg.Wait()
 	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
+	statf.WriteString("client_id,bench_test,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
 	for cid, stat := range clientStats {
 		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", cid, bstr, stat.Ops, stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(), stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
 	}
