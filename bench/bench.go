@@ -61,7 +61,8 @@ func (self *Benchmark) Init() {
 	for _, client := range self.clients {
 		err := client.Setup()
 		if err != nil {
-			panic(err)
+			client.Log("error in initializing: %v", err)
+			// log.Fatal(err)
 		}
 	}
 
@@ -111,7 +112,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 		d := time.Since(begin)
 		if err != nil {
 			stat.Errors++
-			client.Log("Error in processing %s request for key %s: %v", bstr, req.key, err)
+			client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
 			if err == zk.ErrNoServer {
 				client.Reconnect()
 			}
@@ -205,7 +206,8 @@ func (self *Benchmark) SmokeTest() {
 	for _, client := range self.clients {
 		children, stat, _, err := client.Conn.ChildrenW(self.Namespace)
 		if err != nil {
-			panic(err)
+			log.Println(err)
+			// panic(err)
 		}
 		client.Log("children: %+v; stat: %+v", children, stat)
 	}

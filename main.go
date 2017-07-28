@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -11,9 +12,17 @@ import (
 
 var (
 	conf      = flag.String("conf", "bench.conf", "Benchmark configuration file")
-	outprefix = flag.String("outprefix", "zkbench", "Benchmark stat filename prefix")
+	outprefix = flag.String("outprefix", "zkresult", "Benchmark stat filename prefix")
+	nonstop   = flag.Bool("nonstop", false, "Run the benchmarks non-stop")
 	purge     = flag.Bool("purge", false, "Purge all prior test data")
 )
+
+type logWriter struct {
+}
+
+func (writer logWriter) Write(bytes []byte) (int, error) {
+	return fmt.Print(time.Now().UTC().Format("2006-01-02T15:04:05.999Z") + string(bytes))
+}
 
 func main() {
 	flag.Parse()
@@ -23,6 +32,10 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(zkb.TypeStr(config.Type))
+
+	log.SetFlags(0)
+	log.SetOutput(new(logWriter))
+
 	b := new(zkb.Benchmark)
 	b.BenchConfig = *config
 	b.Init()
@@ -35,7 +48,13 @@ func main() {
 	b.SmokeTest()
 	current := time.Now()
 	prefix := *outprefix + "-" + current.Format("2006-01-02-15_04_05") + "-"
-	b.Run(prefix)
+	for {
+		b.Run(prefix)
+		if !*nonstop {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if b.Cleanup {
 		b.Done()
 	}
