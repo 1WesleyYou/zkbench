@@ -197,21 +197,22 @@ func (self *Client) Reconnect() error {
 	return nil
 }
 
-func NewClient(id int, server string, endpoint string, namespace string) (*Client, error) {
+func NewClient(id string, server string, endpoint string, namespace string) (*Client, error) {
 	conn, _, err := zk.Connect([]string{endpoint}, time.Second)
 	if err != nil {
 		return nil, err
 	}
 	var l ConnLogger
 	conn.SetLogger(&l)
-	sid := fmt.Sprintf("%d", id)
-	return &Client{Id: sid, Server: server, Namespace: namespace + "/client" + sid, EndPoint: endpoint, Conn: conn}, nil
+	return &Client{Id: id, Server: server, Namespace: namespace, EndPoint: endpoint, Conn: conn}, nil
 }
 
 func NewClients(servers []string, endpoints []string, nclients int, namespace string) ([]*Client, error) {
 	clients := make([]*Client, nclients)
 	for i := 0; i < nclients; i++ {
-		client, err := NewClient(i+1, servers[i%len(servers)], endpoints[i%len(endpoints)], namespace)
+		sid := fmt.Sprintf("%d", i+1)
+		ns := namespace + "/client" + sid
+		client, err := NewClient(sid, servers[i%len(servers)], endpoints[i%len(endpoints)], ns)
 		if err != nil {
 			return nil, err
 		}

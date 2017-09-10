@@ -32,6 +32,7 @@ type ReqGenerator func(iter int64) *Request
 
 type Benchmark struct {
 	clients     []*Client
+	root_client *Client
 	initialized bool
 	BenchConfig
 }
@@ -57,11 +58,19 @@ func (self *Benchmark) Init() {
 		log.Fatal("Error:", err)
 	}
 	self.clients = clients
-
+	if len(self.Servers) > 0 {
+		self.root_client, _ = NewClient("root", self.Servers[0], self.Endpoints[0], self.Namespace)
+		err := self.root_client.Setup()
+		if err != nil {
+			self.root_client.Log("error in initializing root client: %v", err)
+		}
+	} else {
+		self.root_client = nil
+	}
 	for _, client := range self.clients {
 		err := client.Setup()
 		if err != nil {
-			client.Log("error in initializing: %v", err)
+			client.Log("error in initializing client %s: %v", client.Id, err)
 			// log.Fatal(err)
 		}
 	}
@@ -231,6 +240,13 @@ func (self *Benchmark) Done() {
 			break
 		}
 		current = leftover
+	}
+	if self.root_client != nil {
+		self.root_client.Log("clean up")
+		err := self.root_client.Cleanup()
+		if err != nil {
+			self.root_client.Log("error in clean up root directory: %v", err)
+		}
 	}
 }
 
