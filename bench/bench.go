@@ -87,14 +87,14 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 		panic(err)
 	}
 	summaryf.WriteString("client_id,bench_test,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
-  var rawf *os.File
-  if raw {
-    rawf, err = os.OpenFile(outprefix+"raw.dat", os.O_RDWR|os.O_CREATE, 0644)
-    if err != nil {
-      panic(err)
-    }
-	  rawf.WriteString("client_id,bench_test,time,op_id,error,latency\n")
-  }
+	var rawf *os.File
+	if raw {
+		rawf, err = os.OpenFile(outprefix+"raw.dat", os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			panic(err)
+		}
+		rawf.WriteString("client_id,bench_test,time,op_id,error,latency\n")
+	}
 	self.runBench(WARM_UP, 1, summaryf, rawf)
 	if self.Type&CREATE != 0 {
 		self.runBench(CREATE, 1, summaryf, rawf)
@@ -110,9 +110,9 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 		self.runBench(WRITE, 3, summaryf, rawf)
 	}
 	summaryf.Close()
-  if rawf != nil {
-	  rawf.Close()
-  }
+	if rawf != nil {
+		rawf.Close()
+	}
 }
 
 func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
@@ -123,7 +123,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 		req = generator(-1)
 	}
 	bstr := btype.String()
-  stat.StartTime = time.Now()
+	stat.StartTime = time.Now()
 	for i := int64(0); i < self.NRequests; i++ {
 		stat.Ops++
 		if !same {
@@ -132,26 +132,26 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 		begin := time.Now()
 		err := handler(client, req)
 		d := time.Since(begin)
-    stat.Latencies[i].Start = begin
+		stat.Latencies[i].Start = begin
 		if err != nil {
 			stat.Errors++
 			client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
 			if err == zk.ErrNoServer {
 				client.Reconnect()
 			}
-      stat.Latencies[i].Latency = -1
+			stat.Latencies[i].Latency = -1
 		} else {
-      stat.Latencies[i].Latency = d
-      if i == 0 || d < stat.MinLatency {
-        stat.MinLatency = d
-      }
-      if i == 0 || d > stat.MaxLatency {
-        stat.MaxLatency = d
-      }
-      stat.TotalLatency += d
-    }
+			stat.Latencies[i].Latency = d
+			if i == 0 || d < stat.MinLatency {
+				stat.MinLatency = d
+			}
+			if i == 0 || d > stat.MaxLatency {
+				stat.MaxLatency = d
+			}
+			stat.TotalLatency += d
+		}
 	}
-  stat.EndTime = time.Now()
+	stat.EndTime = time.Now()
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
 	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
 	return &stat
@@ -225,17 +225,17 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	for cid, stat := range clientStats {
 		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", cid, bstr, stat.Ops, stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(), stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
 	}
-  if rawf != nil {
-	  for cid, stat := range clientStats {
-      for opid, latency := range stat.Latencies {
-        latency_error := 0
-        if latency.Latency < 0 {
-          latency_error = 1
-        }
-		    rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, bstr, latency.Start.Format("15:04:05.00000"), opid, latency_error, latency.Latency.Nanoseconds()))
-      }
-    }
-  }
+	if rawf != nil {
+		for cid, stat := range clientStats {
+			for opid, latency := range stat.Latencies {
+				latency_error := 0
+				if latency.Latency < 0 {
+					latency_error = 1
+				}
+				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, bstr, latency.Start.Format("15:04:05.00000"), opid, latency_error, latency.Latency.Nanoseconds()))
+			}
+		}
+	}
 }
 
 func (self *Benchmark) SmokeTest() {
