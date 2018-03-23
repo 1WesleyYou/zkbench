@@ -332,7 +332,6 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	for cid := range self.clients {
 		for i := 0; i < concurrency; i++ {
 			wg.Add(1)
-			fmt.Printf("client %d applies %d operations\n", cid, nrequests[i])
 			go func(cid int, nrequests int64, parallelims int, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
 				client := self.clients[cid]
 				stat := self.processRequests(client, btype, nrequests, parallelism, zipf, self.SameKey, generator, handler)
