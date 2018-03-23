@@ -21,6 +21,11 @@ const (
 	WRITE             = 1 << iota
 	CREATE            = 1 << iota
 	DELETE            = 1 << iota
+	MIXED             = 1 << iota
+)
+
+const (
+	ZIPF_SKEW = 1.3
 )
 
 type Request struct {
@@ -50,6 +55,10 @@ func (self BenchType) String() string {
 		return "WRITE"
 	case CREATE:
 		return "CREATE"
+	case DELETE:
+		return "DELETE"
+	case MIXED:
+		return "MIXED"
 	default:
 		return "UNKNOWN"
 	}
@@ -107,7 +116,10 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 		self.runBench(READ, 1, summaryf, rawf) // read
 	}
 	if self.Type&WRITE != 0 {
-		self.runBench(WRITE, 2, summaryf, rawf)
+		self.runBench(WRITE, 1, summaryf, rawf) // write
+	}
+	if self.Type&MIXED != 0 {
+		self.runBench(MIXED, 1, summaryf, rawf) // r/w
 	}
 	summaryf.Close()
 	if rawf != nil {
@@ -115,48 +127,74 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 	}
 }
 
-func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequests int64, zipf *mrand.Zipf, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
+func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequests int64,
+	parallelism int, zipf *mrand.Zipf, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
+
 	var req *Request
 	var stat BenchStat
+	var wg sync.WaitGroup
+	var mutex = &sync.Mutex{}
+
 	stat.Latencies = make([]BenchLatency, self.NRequests)
 	if same {
 		req = generator(-1)
 	}
 	bstr := btype.String()
+	start := int64(0)
+	end := start
+	group := nrequests / int64(parallelism)
 	stat.StartTime = time.Now()
-	for i := int64(0); i < nrequests; i++ {
-		stat.Ops++
-		if !same {
-			if zipf != nil {
-				var key int64 = int64(zipf.Uint64())
-				// fmt.Printf("random key %d\n\n", key)
-				req = generator(key)
-			} else {
-				req = generator(i)
-			}
+	for p := 1; p <= parallelism; p++ {
+		// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
+		if start >= nrequests {
+			break
 		}
-		begin := time.Now()
-		err := handler(client, req)
-		d := time.Since(begin)
-		stat.Latencies[i].Start = begin
-		if err != nil {
-			stat.Errors++
-			client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
-			if err == zk.ErrNoServer {
-				client.Reconnect()
-			}
-			stat.Latencies[i].Latency = -1
-		} else {
-			stat.Latencies[i].Latency = d
-			if i == 0 || d < stat.MinLatency {
-				stat.MinLatency = d
-			}
-			if i == 0 || d > stat.MaxLatency {
-				stat.MaxLatency = d
-			}
-			stat.TotalLatency += d
+		end = start + group
+		if end > nrequests {
+			end = nrequests // cannot exceed more than nrequests
 		}
+		wg.Add(1)
+		go func(start, end int64) {
+			for j := start; j < end; j++ {
+				if !same {
+					if zipf != nil {
+						var key int64 = int64(zipf.Uint64())
+						// fmt.Printf("random key %d\n\n", key)
+						req = generator(key)
+					} else {
+						req = generator(j)
+					}
+				}
+				begin := time.Now()
+				err := handler(client, req)
+				d := time.Since(begin)
+				if err == zk.ErrNoServer {
+					client.Reconnect()
+				}
+				mutex.Lock()
+				stat.Latencies[j].Start = begin
+				if err != nil {
+					stat.Errors++
+					client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
+					stat.Latencies[j].Latency = -1
+				} else {
+					stat.Latencies[j].Latency = d
+					if j == 0 || d < stat.MinLatency {
+						stat.MinLatency = d
+					}
+					if j == 0 || d > stat.MaxLatency {
+						stat.MaxLatency = d
+					}
+					stat.TotalLatency += d
+				}
+				stat.Ops++
+				mutex.Unlock()
+			}
+			wg.Done()
+		}(start, end)
+		start = end
 	}
+	wg.Wait()
 	stat.EndTime = time.Now()
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
 	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
@@ -174,96 +212,135 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	fillVal := []byte("whosyourdaddy")
 	clientStats := make([]*BenchStat, self.NClients)
 
-	for cid := range self.clients {
-		var handler ReqHandler
-		var generator ReqGenerator
-		var nrequests int64
-		var zipf *mrand.Zipf
+	// at most two concurrent request types (r/w)
+	generators := make([]ReqGenerator, 2)
+	handlers := make([]ReqHandler, 2)
+	nrequests := make([]int64, 2)
+	zipfs := make([]*mrand.Zipf, 2)
+	concurrency := 1 // by default one outstanding request type
+	parallelism := 1 // by default each request is sent synchronously
 
-		switch btype {
-		case WARM_UP:
-			generator = func(iter int64) *Request { return &Request{} }
-			handler = func(c *Client, r *Request) error {
-				_, _, err := c.Read(r.key)
-				return err
-			}
-			nrequests = self.NRequests / 10 // warm up n/10 iterations
-		case READ:
-			if self.SameKey {
-				generator = func(iter int64) *Request { return &Request{key, empty} }
-			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
-			}
-			handler = func(c *Client, r *Request) error {
-				_, _, err := c.Read(r.key)
-				return err
-			}
-			if self.ReadPercent > 0 {
-				nrequests = int64(float64(self.ReadPercent) * float64(self.NRequests))
-			} else {
-				nrequests = self.NRequests // full requests
-			}
-			// depending on if user specified random access
-			if self.RandomAccess {
-				zipf = mrand.NewZipf(rd, 1.3, 1.0, uint64(nrequests))
-			}
-		case WRITE:
-			if self.SameKey {
-				generator = func(iter int64) *Request { return &Request{key, val} }
-			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), val} }
-			}
-			handler = func(c *Client, r *Request) error {
-				return c.Write(r.key, r.value)
-			}
-			if self.WritePercent > 0 {
-				nrequests = int64(float64(self.WritePercent) * float64(self.NRequests))
-			} else {
-				nrequests = self.NRequests // full requests
-			}
-			// depending on if user specified random access
-			if self.RandomAccess {
-				zipf = mrand.NewZipf(rd, 1.3, 1.0, uint64(nrequests))
-			}
-		case CREATE:
-			if self.SameKey {
-				generator = func(iter int64) *Request { return &Request{key, empty} }
-			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
-			}
-			handler = func(c *Client, r *Request) error {
-				return c.Create(r.key, r.value)
-			}
-			nrequests = self.NRequests // full key space
-		case FILL:
-			if self.SameKey {
-				generator = func(iter int64) *Request { return &Request{key, fillVal} }
-			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), fillVal} }
-			}
-			handler = func(c *Client, r *Request) error {
-				return c.Write(r.key, r.value)
-			}
-			nrequests = self.NRequests // full key space
-		case DELETE:
-			if self.SameKey {
-				generator = func(iter int64) *Request { return &Request{key, empty} }
-			} else {
-				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
-			}
-			handler = func(c *Client, r *Request) error {
-				return c.Delete(r.key)
-			}
-			nrequests = self.NRequests // full requests
+	switch btype {
+	case WARM_UP:
+		generators[0] = func(iter int64) *Request { return &Request{} }
+		handlers[0] = func(c *Client, r *Request) error {
+			_, _, err := c.Read(r.key)
+			return err
 		}
-		wg.Add(1)
-		go func(cid int, nrequests int64, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
-			client := self.clients[cid]
-			stat := self.processRequests(client, btype, nrequests, zipf, self.SameKey, generator, handler)
-			client.Log("done bench %s", btype.String())
-			clientStats[cid] = stat
-			wg.Done()
-		}(cid, nrequests, zipf, generator, handler)
+		nrequests[0] = self.NRequests / 10 // warm up n/10 iterations
+	case READ:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, empty} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			_, _, err := c.Read(r.key)
+			return err
+		}
+		if self.ReadPercent > 0 {
+			nrequests[0] = int64(float64(self.ReadPercent) * float64(self.NRequests))
+		} else {
+			nrequests[0] = self.NRequests // full requests
+		}
+		// depending on if user specified random access
+		if self.RandomAccess {
+			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
+		}
+	case WRITE:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, val} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), val} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			return c.Write(r.key, r.value)
+		}
+		if self.WritePercent > 0 {
+			nrequests[0] = int64(float64(self.WritePercent) * float64(self.NRequests))
+		} else {
+			nrequests[0] = self.NRequests // full requests
+		}
+		// depending on if user specified random access
+		if self.RandomAccess {
+			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
+		}
+	case CREATE:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, empty} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			return c.Create(r.key, r.value)
+		}
+		nrequests[0] = self.NRequests // full key space
+	case FILL:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, fillVal} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), fillVal} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			return c.Write(r.key, r.value)
+		}
+		nrequests[0] = self.NRequests // full key space
+	case DELETE:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, empty} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			return c.Delete(r.key)
+		}
+		nrequests[0] = self.NRequests // full requests
+	case MIXED:
+		if self.SameKey {
+			generators[0] = func(iter int64) *Request { return &Request{key, empty} }
+			generators[1] = func(iter int64) *Request { return &Request{key, val} }
+		} else {
+			generators[0] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), empty} }
+			generators[1] = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), val} }
+		}
+		handlers[0] = func(c *Client, r *Request) error {
+			_, _, err := c.Read(r.key)
+			return err
+		}
+		handlers[1] = func(c *Client, r *Request) error {
+			return c.Write(r.key, r.value)
+		}
+		if self.ReadPercent > 0 {
+			nrequests[0] = int64(float64(self.ReadPercent) * float64(self.NRequests))
+		} else {
+			nrequests[0] = self.NRequests // full requests
+		}
+		if self.WritePercent > 0 {
+			nrequests[1] = int64(float64(self.WritePercent) * float64(self.NRequests))
+		} else {
+			nrequests[1] = self.NRequests // full requests
+		}
+		// depending on if user specified random access
+		if self.RandomAccess {
+			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
+			zipfs[1] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[1]))
+		}
+		concurrency = 2
+		parallelism = self.Parallelism
+	}
+
+	for cid := range self.clients {
+		for i := 0; i < concurrency; i++ {
+			wg.Add(1)
+			fmt.Printf("client %d applies %d operations\n", cid, nrequests[i])
+			go func(cid int, nrequests int64, parallelims int, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
+				client := self.clients[cid]
+				stat := self.processRequests(client, btype, nrequests, parallelism, zipf, self.SameKey, generator, handler)
+				client.Log("done bench %s", btype.String())
+				clientStats[cid] = stat
+				wg.Done()
+			}(cid, nrequests[i], parallelism, zipfs[i], generators[i], handlers[i])
+		}
 	}
 	wg.Wait()
 	bstr := fmt.Sprintf("%s.%d", btype.String(), run)

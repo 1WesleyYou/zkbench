@@ -20,6 +20,7 @@ type BenchConfig struct {
 	ValueSizeBytes int64
 	SameKey        bool
 	RandomAccess   bool
+	Parallelism    int
 	Cleanup        bool
 }
 
@@ -28,6 +29,7 @@ var (
 		'c': CREATE,
 		'r': READ,
 		'u': WRITE,
+		'm': MIXED,
 		'd': DELETE,
 	}
 )
@@ -43,6 +45,9 @@ func TypeStr(btype uint32) string {
 	}
 	if btype&WRITE != 0 {
 		types[i], i = 'u', i+1
+	}
+	if btype&MIXED != 0 {
+		types[i], i = 'm', i+1
 	}
 	if btype&DELETE != 0 {
 		types[i], i = 'd', i+1
@@ -77,6 +82,10 @@ func ParseConfig(path string) (*BenchConfig, error) {
 		wrpercent = -1 // full requests
 	}
 	fmt.Printf("write percent %f\n", wrpercent)
+	parallelism, err := checkPosInt(config, "parallelism")
+	if err != nil {
+		parallelism = 1 // by default each client send requests synchronously
+	}
 	key_size_bytes, err := checkPosInt64(config, "key_size_bytes")
 	if err != nil {
 		return nil, err
@@ -136,6 +145,7 @@ func ParseConfig(path string) (*BenchConfig, error) {
 		ValueSizeBytes: value_size_bytes,
 		SameKey:        samekey,
 		RandomAccess:   random,
+		Parallelism:    parallelism,
 		Cleanup:        cleanup,
 	}
 	return benchconf, nil
