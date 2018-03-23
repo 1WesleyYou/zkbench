@@ -16,6 +16,7 @@ type BenchType uint32
 
 const (
 	WARM_UP BenchType = 1 << iota
+	FILL              = 1 << iota
 	READ              = 1 << iota
 	WRITE             = 1 << iota
 	CREATE            = 1 << iota
@@ -41,6 +42,8 @@ func (self BenchType) String() string {
 	switch self {
 	case WARM_UP:
 		return "WARM_UP"
+	case FILL:
+		return "FILL"
 	case READ:
 		return "READ"
 	case WRITE:
@@ -97,17 +100,14 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 	}
 	self.runBench(WARM_UP, 1, summaryf, rawf)
 	if self.Type&CREATE != 0 {
-		self.runBench(CREATE, 1, summaryf, rawf)
-	}
-	if self.Type&WRITE != 0 {
-		self.runBench(WRITE, 1, summaryf, rawf)
+		self.runBench(CREATE, 1, summaryf, rawf) // create key space
+		self.runBench(FILL, 1, summaryf, rawf)   // fill in data
 	}
 	if self.Type&READ != 0 {
-		self.runBench(READ, 1, summaryf, rawf)
+		self.runBench(READ, 1, summaryf, rawf) // read
 	}
 	if self.Type&WRITE != 0 {
 		self.runBench(WRITE, 2, summaryf, rawf)
-		self.runBench(WRITE, 3, summaryf, rawf)
 	}
 	summaryf.Close()
 	if rawf != nil {
@@ -115,7 +115,7 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 	}
 }
 
-func (self *Benchmark) processRequests(client *Client, btype BenchType, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
+func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequests int64, zipf *mrand.Zipf, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
 	var req *Request
 	var stat BenchStat
 	stat.Latencies = make([]BenchLatency, self.NRequests)
@@ -124,10 +124,16 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 	}
 	bstr := btype.String()
 	stat.StartTime = time.Now()
-	for i := int64(0); i < self.NRequests; i++ {
+	for i := int64(0); i < nrequests; i++ {
 		stat.Ops++
 		if !same {
-			req = generator(i)
+			if zipf != nil {
+				var key int64 = int64(zipf.Uint64())
+				// fmt.Printf("random key %d\n\n", key)
+				req = generator(key)
+			} else {
+				req = generator(i)
+			}
 		}
 		begin := time.Now()
 		err := handler(client, req)
@@ -158,14 +164,22 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, same boo
 }
 
 func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *os.File) {
-	var wg sync.WaitGroup
-	key := sameKey(self.KeySizeBytes)
-	val := randBytes(self.ValueSizeBytes)
 	var empty []byte
+	var wg sync.WaitGroup
+
+	src := mrand.NewSource(time.Now().UnixNano())
+	rd := mrand.New(src)
+	key := sameKey(self.KeySizeBytes)
+	val := randBytes(src, self.ValueSizeBytes)
+	fillVal := []byte("whosyourdaddy")
 	clientStats := make([]*BenchStat, self.NClients)
+
 	for cid := range self.clients {
 		var handler ReqHandler
 		var generator ReqGenerator
+		var nrequests int64
+		var zipf *mrand.Zipf
+
 		switch btype {
 		case WARM_UP:
 			generator = func(iter int64) *Request { return &Request{} }
@@ -173,6 +187,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				_, _, err := c.Read(r.key)
 				return err
 			}
+			nrequests = self.NRequests / 10 // warm up n/10 iterations
 		case READ:
 			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, empty} }
@@ -183,6 +198,15 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				_, _, err := c.Read(r.key)
 				return err
 			}
+			if self.ReadPercent > 0 {
+				nrequests = int64(float64(self.ReadPercent) * float64(self.NRequests))
+			} else {
+				nrequests = self.NRequests // full requests
+			}
+			// depending on if user specified random access
+			if self.RandomAccess {
+				zipf = mrand.NewZipf(rd, 1.3, 1.0, uint64(nrequests))
+			}
 		case WRITE:
 			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, val} }
@@ -191,6 +215,15 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			}
 			handler = func(c *Client, r *Request) error {
 				return c.Write(r.key, r.value)
+			}
+			if self.WritePercent > 0 {
+				nrequests = int64(float64(self.WritePercent) * float64(self.NRequests))
+			} else {
+				nrequests = self.NRequests // full requests
+			}
+			// depending on if user specified random access
+			if self.RandomAccess {
+				zipf = mrand.NewZipf(rd, 1.3, 1.0, uint64(nrequests))
 			}
 		case CREATE:
 			if self.SameKey {
@@ -201,6 +234,17 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			handler = func(c *Client, r *Request) error {
 				return c.Create(r.key, r.value)
 			}
+			nrequests = self.NRequests // full key space
+		case FILL:
+			if self.SameKey {
+				generator = func(iter int64) *Request { return &Request{key, fillVal} }
+			} else {
+				generator = func(iter int64) *Request { return &Request{sequentialKey(self.KeySizeBytes, iter), fillVal} }
+			}
+			handler = func(c *Client, r *Request) error {
+				return c.Write(r.key, r.value)
+			}
+			nrequests = self.NRequests // full key space
 		case DELETE:
 			if self.SameKey {
 				generator = func(iter int64) *Request { return &Request{key, empty} }
@@ -210,15 +254,16 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			handler = func(c *Client, r *Request) error {
 				return c.Delete(r.key)
 			}
+			nrequests = self.NRequests // full requests
 		}
 		wg.Add(1)
-		go func(cid int, generator ReqGenerator, handler ReqHandler) {
+		go func(cid int, nrequests int64, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
 			client := self.clients[cid]
-			stat := self.processRequests(client, btype, self.SameKey, generator, handler)
+			stat := self.processRequests(client, btype, nrequests, zipf, self.SameKey, generator, handler)
 			client.Log("done bench %s", btype.String())
 			clientStats[cid] = stat
 			wg.Done()
-		}(cid, generator, handler)
+		}(cid, nrequests, zipf, generator, handler)
 	}
 	wg.Wait()
 	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
@@ -290,7 +335,7 @@ func sequentialKey(size, num int64) string {
 	return strings.Repeat("0", delta) + txt
 }
 
-func randBytes(bytesN int64) []byte {
+func randBytes(src mrand.Source, bytesN int64) []byte {
 	// source: http://stackoverflow.com/questions/22892120/how-to-generate-a-random-string-of-a-fixed-length-in-golang
 	const (
 		letterBytes   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -298,7 +343,6 @@ func randBytes(bytesN int64) []byte {
 		letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
 		letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
 	)
-	src := mrand.NewSource(time.Now().UnixNano())
 	b := make([]byte, bytesN)
 	for i, cache, remain := bytesN-1, src.Int63(), letterIdxMax; i >= 0; {
 		if remain == 0 {
