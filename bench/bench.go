@@ -150,68 +150,74 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 	if parallelism > 1 {
 		client.AddChildren(parallelism)
 	}
-	for p := 0; p < parallelism; p++ {
-		// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
-		if start >= nrequests {
-			break
-		}
-		end = start + group
-		if end > nrequests {
-			end = nrequests // cannot exceed more than nrequests
-		}
-		wg.Add(1)
-		var c *Client
-		if parallelism > 1 {
-			c = client.GetChild(p)
-			if c == nil {
-				c = client
-			}
-		} else {
-			c = client
-		}
-		go func(client *Client, start, end int64) {
-			for j := start; j < end; j++ {
-				if !same {
-					if zipf != nil {
-						var key int64 = int64(zipf.Uint64())
-						// fmt.Printf("random key %d\n\n", key)
-						req = generator(key)
-					} else {
-						req = generator(j)
-					}
-				}
-				begin := time.Now()
-				err := handler(client, req)
-				d := time.Since(begin)
-				mutex.Lock()
-				stat.Latencies[j].Start = begin
-				if err != nil {
-					stat.Errors++
-					client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
-					if err == zk.ErrNoServer {
-						client.Reconnect()
-					}
-					stat.Latencies[j].Latency = -1
+
+	reqf := func(client *Client, start, end int64, parallel bool) {
+		for j := start; j < end; j++ {
+			if !same {
+				if zipf != nil {
+					var key int64 = int64(zipf.Uint64())
+					// fmt.Printf("random key %d\n\n", key)
+					req = generator(key)
 				} else {
-					stat.Latencies[j].Latency = d
-					if j == 0 || d < stat.MinLatency {
-						stat.MinLatency = d
-					}
-					if j == 0 || d > stat.MaxLatency {
-						stat.MaxLatency = d
-					}
-					stat.TotalLatency += d
+					req = generator(j)
 				}
-				stat.Ops++
+			}
+			begin := time.Now()
+			err := handler(client, req)
+			d := time.Since(begin)
+			if parallel {
+				mutex.Lock()
+			}
+			stat.Ops++
+			stat.Latencies[j].Start = begin
+			if err != nil {
+				stat.Errors++
+				client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
+				if err == zk.ErrNoServer {
+					client.Reconnect()
+				}
+				stat.Latencies[j].Latency = -1
+			} else {
+				stat.Latencies[j].Latency = d
+				if j == 0 || d < stat.MinLatency {
+					stat.MinLatency = d
+				}
+				if j == 0 || d > stat.MaxLatency {
+					stat.MaxLatency = d
+				}
+				stat.TotalLatency += d
+			}
+			if parallel {
 				mutex.Unlock()
 			}
+		}
+		if parallel {
 			wg.Done()
-		}(c, start, end)
-		start = end
+		}
 	}
-	wg.Wait()
 	if parallelism > 1 {
+		for p := 0; p < parallelism; p++ {
+			// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
+			if start >= nrequests {
+				break
+			}
+			end = start + group
+			if end > nrequests {
+				end = nrequests // cannot exceed more than nrequests
+			}
+			wg.Add(1)
+			c := client.GetChild(p)
+			if c == nil {
+				client.Log("failed to get child for parallel request group %d\n", p)
+				c = client
+			}
+			go reqf(c, start, end, true)
+			start = end
+		}
+		wg.Wait()
 		client.CloseChildren()
+	} else {
+		reqf(client, 0, nrequests, false)
 	}
 	stat.EndTime = time.Now()
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
@@ -234,7 +240,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	generators := make([]ReqGenerator, 2)
 	handlers := make([]ReqHandler, 2)
 	nrequests := make([]int64, 2)
-	zipfs := make([]*mrand.Zipf, 2)
+	random := false
 	concurrency := 1 // by default one outstanding request type
 	parallelism := 1 // by default each request is sent synchronously
 
@@ -262,9 +268,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			nrequests[0] = self.NRequests // full requests
 		}
 		// depending on if user specified random access
-		if self.RandomAccess {
-			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
-		}
+		random = self.RandomAccess
 	case WRITE:
 		if self.SameKey {
 			generators[0] = func(iter int64) *Request { return &Request{key, val} }
@@ -280,9 +284,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			nrequests[0] = self.NRequests // full requests
 		}
 		// depending on if user specified random access
-		if self.RandomAccess {
-			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
-		}
+		random = self.RandomAccess
 	case CREATE:
 		if self.SameKey {
 			generators[0] = func(iter int64) *Request { return &Request{key, empty} }
@@ -339,10 +341,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			nrequests[1] = self.NRequests // full requests
 		}
 		// depending on if user specified random access
-		if self.RandomAccess {
-			zipfs[0] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[0]))
-			zipfs[1] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[1]))
-		}
+		random = self.RandomAccess
 		concurrency = 2
 		parallelism = self.Parallelism
 	}
@@ -356,6 +355,12 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	}
 
 	for _, client := range self.clients {
+		zipfs := make([]*mrand.Zipf, 2)
+		if random {
+			for i := 0; i < concurrency; i++ {
+				zipfs[i] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[i]))
+			}
+		}
 		if concurrency > 1 {
 			// if the concurrency level is larger than 1
 			// need to create multiple clients to launch concurrent requests
