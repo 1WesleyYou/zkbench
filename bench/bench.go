@@ -71,7 +71,7 @@ func (self *Benchmark) Init() {
 	}
 	self.clients = clients
 	if len(self.Servers) > 0 {
-		self.root_client, _ = NewClient("root", self.Servers[0], self.Endpoints[0], self.Namespace)
+		self.root_client, _ = NewClient(0, "root", self.Servers[0], self.Endpoints[0], self.Namespace)
 		err := self.root_client.Setup()
 		if err != nil {
 			self.root_client.Log("error in initializing root client: %v", err)
@@ -112,14 +112,17 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 		self.runBench(CREATE, 1, summaryf, rawf) // create key space
 		self.runBench(FILL, 1, summaryf, rawf)   // fill in data
 	}
-	if self.Type&READ != 0 {
-		self.runBench(READ, 1, summaryf, rawf) // read
-	}
-	if self.Type&WRITE != 0 {
-		self.runBench(WRITE, 1, summaryf, rawf) // write
-	}
-	if self.Type&MIXED != 0 {
-		self.runBench(MIXED, 1, summaryf, rawf) // r/w
+	// runs only apply to the actual benchmark
+	for i := 0; i < self.Runs; i++ {
+		if self.Type&READ != 0 {
+			self.runBench(READ, i+1, summaryf, rawf) // read
+		}
+		if self.Type&WRITE != 0 {
+			self.runBench(WRITE, i+1, summaryf, rawf) // write
+		}
+		if self.Type&MIXED != 0 {
+			self.runBench(MIXED, i+1, summaryf, rawf) // r/w
+		}
 	}
 	summaryf.Close()
 	if rawf != nil {
@@ -144,7 +147,10 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 	end := start
 	group := nrequests / int64(parallelism)
 	stat.StartTime = time.Now()
-	for p := 1; p <= parallelism; p++ {
+	if parallelism > 1 {
+		client.AddChildren(parallelism)
+	}
+	for p := 0; p < parallelism; p++ {
 		// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
 		if start >= nrequests {
 			break
@@ -154,7 +160,16 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 			end = nrequests // cannot exceed more than nrequests
 		}
 		wg.Add(1)
-		go func(start, end int64) {
+		var c *Client
+		if parallelism > 1 {
+			c = client.GetChild(p)
+			if c == nil {
+				c = client
+			}
+		} else {
+			c = client
+		}
+		go func(client *Client, start, end int64) {
 			for j := start; j < end; j++ {
 				if !same {
 					if zipf != nil {
@@ -168,14 +183,14 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 				begin := time.Now()
 				err := handler(client, req)
 				d := time.Since(begin)
-				if err == zk.ErrNoServer {
-					client.Reconnect()
-				}
 				mutex.Lock()
 				stat.Latencies[j].Start = begin
 				if err != nil {
 					stat.Errors++
 					client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
+					if err == zk.ErrNoServer {
+						client.Reconnect()
+					}
 					stat.Latencies[j].Latency = -1
 				} else {
 					stat.Latencies[j].Latency = d
@@ -191,10 +206,13 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 				mutex.Unlock()
 			}
 			wg.Done()
-		}(start, end)
+		}(c, start, end)
 		start = end
 	}
 	wg.Wait()
+	if parallelism > 1 {
+		client.CloseChildren()
+	}
 	stat.EndTime = time.Now()
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
 	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
@@ -329,19 +347,39 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 		parallelism = self.Parallelism
 	}
 
-	for cid := range self.clients {
-		for i := 0; i < concurrency; i++ {
+	reqf := func(client *Client, nrequests int64, parallelims int, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
+		client.Log("start bench %s", btype.String())
+		stat := self.processRequests(client, btype, nrequests, parallelism, zipf, self.SameKey, generator, handler)
+		client.Log("done bench %s", btype.String())
+		clientStats[client.Id-1] = stat
+		wg.Done()
+	}
+
+	for _, client := range self.clients {
+		if concurrency > 1 {
+			// if the concurrency level is larger than 1
+			// need to create multiple clients to launch concurrent requests
+			// otherwise there will be data races
+			client.AddChildren(concurrency)
+			for i := 0; i < concurrency; i++ {
+				child := client.GetChild(i)
+				if child != nil {
+					wg.Add(1)
+					go reqf(child, nrequests[i], parallelism, zipfs[i], generators[i], handlers[i])
+				}
+			}
+		} else {
 			wg.Add(1)
-			go func(cid int, nrequests int64, parallelims int, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
-				client := self.clients[cid]
-				stat := self.processRequests(client, btype, nrequests, parallelism, zipf, self.SameKey, generator, handler)
-				client.Log("done bench %s", btype.String())
-				clientStats[cid] = stat
-				wg.Done()
-			}(cid, nrequests[i], parallelism, zipfs[i], generators[i], handlers[i])
+			go reqf(client, nrequests[0], parallelism, zipfs[0], generators[0], handlers[0])
 		}
 	}
 	wg.Wait()
+
+	// destroy child clients
+	for _, client := range self.clients {
+		client.CloseChildren()
+	}
+
 	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
 	for cid, stat := range clientStats {
 		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", cid, bstr, stat.Ops, stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(), stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))

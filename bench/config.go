@@ -20,6 +20,7 @@ type BenchConfig struct {
 	ValueSizeBytes int64
 	SameKey        bool
 	RandomAccess   bool
+	Runs           int
 	Parallelism    int
 	Cleanup        bool
 }
@@ -86,6 +87,10 @@ func ParseConfig(path string) (*BenchConfig, error) {
 	if err != nil {
 		parallelism = 1 // by default each client send requests synchronously
 	}
+	runs, err := checkPosInt(config, "runs")
+	if err != nil {
+		runs = 1 // by default single run
+	}
 	key_size_bytes, err := checkPosInt64(config, "key_size_bytes")
 	if err != nil {
 		return nil, err
@@ -146,6 +151,7 @@ func ParseConfig(path string) (*BenchConfig, error) {
 		SameKey:        samekey,
 		RandomAccess:   random,
 		Parallelism:    parallelism,
+		Runs:           runs,
 		Cleanup:        cleanup,
 	}
 	return benchconf, nil
