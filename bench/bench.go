@@ -130,7 +130,7 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 	}
 }
 
-func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequests int64,
+func (self *Benchmark) processRequests(client *Client, optype string, nrequests int64,
 	parallelism int, random bool, same bool, generator ReqGenerator, handler ReqHandler) {
 
 	var req *Request
@@ -138,11 +138,11 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 	var wg sync.WaitGroup
 	var mutex = &sync.Mutex{}
 
+	stat.OpType = optype
 	stat.Latencies = make([]BenchLatency, nrequests)
 	if same {
 		req = generator(-1)
 	}
-	bstr := btype.String()
 	start := int64(0)
 	end := start
 	group := nrequests / int64(parallelism)
@@ -170,7 +170,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 			stat.Latencies[j].Start = begin
 			if err != nil {
 				stat.Errors++
-				client.Log("error in processing %s request for key %s: %v", bstr, req.key, err)
+				client.Log("error in processing %s request for key %s: %v", optype, req.key, err)
 				if err == zk.ErrNoServer {
 					client.Reconnect()
 				}
@@ -196,7 +196,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 	stat.StartTime = time.Now()
 	if parallelism > 1 {
 		for p := 0; p < parallelism; p++ {
-			// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
+			// fmt.Printf("Launching parallel request group %d of %s\n", p, btype)
 			if start >= nrequests {
 				break
 			}
@@ -254,6 +254,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	generators := make([]ReqGenerator, 2)
 	handlers := make([]ReqHandler, 2)
 	nrequests := make([]int64, 2)
+	subtypes := make([]BenchType, 2)
 	random := false
 	concurrency := 1 // by default one outstanding request type
 	parallelism := 1 // by default each request is sent synchronously
@@ -354,20 +355,26 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 		} else {
 			nrequests[1] = self.NRequests // full requests
 		}
+		subtypes[0] = READ
+		subtypes[1] = WRITE
 		// depending on if user specified random access
 		random = self.RandomAccess
 		concurrency = 2
 		parallelism = self.Parallelism
 	}
 
-	reqf := func(client *Client, nrequests int64, parallelims int, random bool, generator ReqGenerator, handler ReqHandler) {
-		client.Log("start bench %s.%d", btype.String(), run)
-		self.processRequests(client, btype, nrequests, parallelism, random, self.SameKey, generator, handler)
-		client.Log("done bench %s.%d", btype.String(), run)
+	reqf := func(client *Client, nrequests int64, optype string, parallelims int, random bool, generator ReqGenerator, handler ReqHandler) {
+		client.Log("start bench %s", optype)
+		self.processRequests(client, optype, nrequests, parallelism, random, self.SameKey, generator, handler)
+		client.Log("done bench %s", optype)
 		wg.Done()
 	}
 
 	for _, client := range self.clients {
+		// since each run of a benchmark type is independent
+		// and that at the end of this function stat will be
+		// saved, we should reset the stat each time
+		client.Stat = nil
 		if concurrency > 1 {
 			// if the concurrency level is larger than 1
 			// need to create multiple clients to launch concurrent requests
@@ -377,12 +384,14 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				child := client.GetChild(i)
 				if child != nil {
 					wg.Add(1)
-					go reqf(child, nrequests[i], parallelism, random, generators[i], handlers[i])
+					bstr := fmt.Sprintf("%s.%s.%d", btype.String(), subtypes[i].String(), run)
+					go reqf(child, nrequests[i], bstr, parallelism, random, generators[i], handlers[i])
 				}
 			}
 		} else {
 			wg.Add(1)
-			go reqf(client, nrequests[0], parallelism, random, generators[0], handlers[0])
+			bstr := fmt.Sprintf("%s.%d", btype.String(), run)
+			go reqf(client, nrequests[0], bstr, parallelism, random, generators[0], handlers[0])
 		}
 	}
 	wg.Wait()
@@ -398,9 +407,12 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				continue
 			}
 			if client.Stat != nil {
+				client.Log("merge child stats")
 				client.Stat.Merge(child.Stat)
 			} else {
 				client.Stat = child.Stat
+				// reset the optype
+				client.Stat.OpType = fmt.Sprintf("%s.%d", btype.String(), run)
 			}
 			child.Conn.Close()
 			child.Conn = nil
@@ -409,10 +421,9 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	}
 
 	// dump client stats
-	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
 	for _, client := range self.clients {
 		stat := client.Stat
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", client.Id, bstr, stat.Ops,
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", client.Id, stat.OpType, stat.Ops,
 			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
 			stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
 	}
@@ -425,7 +436,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				if latency.Latency < 0 {
 					latency_error = 1
 				}
-				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, bstr, latency.Start.UTC().Format("2006-01-02T15:04:05.000Z07:00"), opid, latency_error, latency.Latency.Nanoseconds()))
+				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, stat.OpType, latency.Start.UTC().Format("2006-01-02T15:04:05.000Z07:00"), opid, latency_error, latency.Latency.Nanoseconds()))
 			}
 		}
 	}

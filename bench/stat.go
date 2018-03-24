@@ -12,6 +12,7 @@ type BenchLatency struct {
 type BenchStat struct {
 	Ops          int64
 	Errors       int64
+	OpType       string
 	StartTime    time.Time
 	EndTime      time.Time
 	Latencies    []BenchLatency
