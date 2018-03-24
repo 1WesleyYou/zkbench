@@ -131,14 +131,14 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 }
 
 func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequests int64,
-	parallelism int, zipf *mrand.Zipf, same bool, generator ReqGenerator, handler ReqHandler) *BenchStat {
+	parallelism int, random bool, same bool, generator ReqGenerator, handler ReqHandler) {
 
 	var req *Request
 	var stat BenchStat
 	var wg sync.WaitGroup
 	var mutex = &sync.Mutex{}
 
-	stat.Latencies = make([]BenchLatency, self.NRequests)
+	stat.Latencies = make([]BenchLatency, nrequests)
 	if same {
 		req = generator(-1)
 	}
@@ -146,12 +146,10 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 	start := int64(0)
 	end := start
 	group := nrequests / int64(parallelism)
-	stat.StartTime = time.Now()
 	if parallelism > 1 {
 		client.AddChildren(parallelism)
 	}
-
-	reqf := func(client *Client, start, end int64, parallel bool) {
+	reqf := func(client *Client, zipf *mrand.Zipf, start, end int64, parallel bool) {
 		for j := start; j < end; j++ {
 			if !same {
 				if zipf != nil {
@@ -195,6 +193,7 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 			wg.Done()
 		}
 	}
+	stat.StartTime = time.Now()
 	if parallelism > 1 {
 		for p := 0; p < parallelism; p++ {
 			// fmt.Printf("Launching parallel request group %d of %s\n", p, bstr)
@@ -211,18 +210,35 @@ func (self *Benchmark) processRequests(client *Client, btype BenchType, nrequest
 				client.Log("failed to get child for parallel request group %d\n", p)
 				c = client
 			}
-			go reqf(c, start, end, true)
+			var zipf *mrand.Zipf
+			if random {
+				rd := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+				zipf = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests))
+			}
+			go reqf(c, zipf, start, end, true)
 			start = end
 		}
 		wg.Wait()
 		client.CloseChildren()
 	} else {
-		reqf(client, 0, nrequests, false)
+		var zipf *mrand.Zipf
+		if random {
+			rd := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+			zipf = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests))
+		}
+		reqf(client, zipf, 0, nrequests, false)
 	}
 	stat.EndTime = time.Now()
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
 	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
-	return &stat
+
+	if client.Stat != nil {
+		// if the client already has stats, merge the stat
+		client.Stat.Merge(&stat)
+	} else {
+		// otherwise, directly use this stat
+		client.Stat = &stat
+	}
 }
 
 func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *os.File) {
@@ -230,11 +246,9 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	var wg sync.WaitGroup
 
 	src := mrand.NewSource(time.Now().UnixNano())
-	rd := mrand.New(src)
 	key := sameKey(self.KeySizeBytes)
 	val := randBytes(src, self.ValueSizeBytes)
 	fillVal := []byte("whosyourdaddy")
-	clientStats := make([]*BenchStat, self.NClients)
 
 	// at most two concurrent request types (r/w)
 	generators := make([]ReqGenerator, 2)
@@ -346,21 +360,14 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 		parallelism = self.Parallelism
 	}
 
-	reqf := func(client *Client, nrequests int64, parallelims int, zipf *mrand.Zipf, generator ReqGenerator, handler ReqHandler) {
-		client.Log("start bench %s", btype.String())
-		stat := self.processRequests(client, btype, nrequests, parallelism, zipf, self.SameKey, generator, handler)
-		client.Log("done bench %s", btype.String())
-		clientStats[client.Id-1] = stat
+	reqf := func(client *Client, nrequests int64, parallelims int, random bool, generator ReqGenerator, handler ReqHandler) {
+		client.Log("start bench %s.%d", btype.String(), run)
+		self.processRequests(client, btype, nrequests, parallelism, random, self.SameKey, generator, handler)
+		client.Log("done bench %s.%d", btype.String(), run)
 		wg.Done()
 	}
 
 	for _, client := range self.clients {
-		zipfs := make([]*mrand.Zipf, 2)
-		if random {
-			for i := 0; i < concurrency; i++ {
-				zipfs[i] = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests[i]))
-			}
-		}
 		if concurrency > 1 {
 			// if the concurrency level is larger than 1
 			// need to create multiple clients to launch concurrent requests
@@ -370,33 +377,55 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				child := client.GetChild(i)
 				if child != nil {
 					wg.Add(1)
-					go reqf(child, nrequests[i], parallelism, zipfs[i], generators[i], handlers[i])
+					go reqf(child, nrequests[i], parallelism, random, generators[i], handlers[i])
 				}
 			}
 		} else {
 			wg.Add(1)
-			go reqf(client, nrequests[0], parallelism, zipfs[0], generators[0], handlers[0])
+			go reqf(client, nrequests[0], parallelism, random, generators[0], handlers[0])
 		}
 	}
 	wg.Wait()
 
-	// destroy child clients
+	// aggregate child request stats
+	// then destroy child clients
 	for _, client := range self.clients {
-		client.CloseChildren()
+		if client.Children == nil {
+			continue
+		}
+		for _, child := range client.Children {
+			if child.Stat == nil {
+				continue
+			}
+			if client.Stat != nil {
+				client.Stat.Merge(child.Stat)
+			} else {
+				client.Stat = child.Stat
+			}
+			child.Conn.Close()
+			child.Conn = nil
+		}
+		client.Children = nil
 	}
 
+	// dump client stats
 	bstr := fmt.Sprintf("%s.%d", btype.String(), run)
-	for cid, stat := range clientStats {
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", cid, bstr, stat.Ops, stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(), stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
+	for _, client := range self.clients {
+		stat := client.Stat
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", client.Id, bstr, stat.Ops,
+			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
+			stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
 	}
 	if rawf != nil {
-		for cid, stat := range clientStats {
+		for _, client := range self.clients {
+			cid := client.Id
+			stat := client.Stat
 			for opid, latency := range stat.Latencies {
 				latency_error := 0
 				if latency.Latency < 0 {
 					latency_error = 1
 				}
-				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, bstr, latency.Start.Format("15:04:05.00000"), opid, latency_error, latency.Latency.Nanoseconds()))
+				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, bstr, latency.Start.UTC().Format("2006-01-02T15:04:05.000Z07:00"), opid, latency_error, latency.Latency.Nanoseconds()))
 			}
 		}
 	}
