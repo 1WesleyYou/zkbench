@@ -16,7 +16,9 @@ type Client struct {
 	Namespace string
 	EndPoint  string
 	Conn      *zk.Conn
-	Children  []*Client // a client may have multiple child clients to launch concurrent requests
+
+	Stat     *BenchStat // the stats for requests issued by this client
+	Children []*Client  // a client may have multiple child clients to launch concurrent requests
 }
 
 var (
