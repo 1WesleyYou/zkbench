@@ -153,7 +153,7 @@ func (self *Benchmark) processRequests(client *Client, optype string, nrequests 
 		for j := start; j < end; j++ {
 			if !same {
 				if zipf != nil {
-					var key int64 = int64(zipf.Uint64())
+					var key int64 = int64(zipf.Uint64()) + start
 					// fmt.Printf("random key %d\n\n", key)
 					req = generator(key)
 				} else {
@@ -213,7 +213,7 @@ func (self *Benchmark) processRequests(client *Client, optype string, nrequests 
 			var zipf *mrand.Zipf
 			if random {
 				rd := mrand.New(mrand.NewSource(time.Now().UnixNano()))
-				zipf = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(nrequests))
+				zipf = mrand.NewZipf(rd, ZIPF_SKEW, 1.0, uint64(end-start))
 			}
 			go reqf(c, zipf, start, end, true)
 			start = end
