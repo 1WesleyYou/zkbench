@@ -98,14 +98,14 @@ func (self *Benchmark) Run(outprefix string, raw bool) {
 	if err != nil {
 		panic(err)
 	}
-	summaryf.WriteString("client_id,bench_test,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
+	summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
 	var rawf *os.File
 	if raw {
 		rawf, err = os.OpenFile(outprefix+"raw.dat", os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			panic(err)
 		}
-		rawf.WriteString("client_id,bench_test,time,op_id,error,latency\n")
+		rawf.WriteString("client_id,bench_type,run,time,op_id,error,latency\n")
 	}
 	self.runBench(WARM_UP, 1, summaryf, rawf)
 	if self.Type&CREATE != 0 {
@@ -423,7 +423,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	// dump client stats
 	for _, client := range self.clients {
 		stat := client.Stat
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%s,%f\n", client.Id, stat.OpType, stat.Ops,
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%s,%f\n", client.Id, btype.String(), run, stat.Ops,
 			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
 			stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
 	}
@@ -436,7 +436,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 				if latency.Latency < 0 {
 					latency_error = 1
 				}
-				rawf.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d,%d\n", cid, stat.OpType, latency.Start.UTC().Format("2006-01-02T15:04:05.000Z07:00"), opid, latency_error, latency.Latency.Nanoseconds()))
+				rawf.WriteString(fmt.Sprintf("%d,%s,%d,%s,%d,%d,%d\n", cid, btype.String(), run, latency.Start.UTC().Format("2006-01-02T15:04:05.000Z07:00"), opid, latency_error, latency.Latency.Nanoseconds()))
 			}
 		}
 	}
