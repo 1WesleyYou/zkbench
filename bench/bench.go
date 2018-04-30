@@ -90,27 +90,33 @@ func (self *Benchmark) Init() {
 	self.initialized = true
 }
 
-func (self *Benchmark) Run(outprefix string, raw bool) {
+func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64) {
 	if !self.initialized {
 		log.Fatal("Must initialize benchmark first")
 	}
-	summaryf, err := os.OpenFile(outprefix+"summary.dat", os.O_RDWR|os.O_CREATE, 0644)
+	summaryf, err := os.OpenFile(outprefix+"summary.dat", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		panic(err)
 	}
-	summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
+	if !nonstop || iter == 1 {
+		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
+	}
 	var rawf *os.File
 	if raw {
-		rawf, err = os.OpenFile(outprefix+"raw.dat", os.O_RDWR|os.O_CREATE, 0644)
+		rawf, err = os.OpenFile(outprefix+"raw.dat", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
 			panic(err)
 		}
-		rawf.WriteString("client_id,bench_type,run,time,op_id,error,latency\n")
+		if !nonstop || iter == 1 {
+			rawf.WriteString("client_id,bench_type,run,time,op_id,error,latency\n")
+		}
 	}
-	self.runBench(WARM_UP, 1, summaryf, rawf)
-	if self.Type&CREATE != 0 {
-		self.runBench(CREATE, 1, summaryf, rawf) // create key space
-		self.runBench(FILL, 1, summaryf, rawf)   // fill in data
+	if !nonstop || iter == 1 {
+		self.runBench(WARM_UP, 1, summaryf, rawf)
+		if self.Type&CREATE != 0 {
+			self.runBench(CREATE, 1, summaryf, rawf) // create key space
+			self.runBench(FILL, 1, summaryf, rawf)   // fill in data
+		}
 	}
 	// runs only apply to the actual benchmark
 	for i := 0; i < self.Runs; i++ {

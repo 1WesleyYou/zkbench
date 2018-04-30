@@ -49,12 +49,14 @@ func main() {
 	b.SmokeTest()
 	current := time.Now()
 	prefix := *outprefix + "-" + current.Format("2006-01-02-15_04_05") + "-"
+	var iter int64 = 1
 	for {
-		b.Run(prefix, *rawstat)
+		b.Run(prefix, *rawstat, *nonstop, iter)
 		if !*nonstop {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(30000 * time.Millisecond)
+		iter++
 	}
 	if b.Cleanup {
 		b.Done()
