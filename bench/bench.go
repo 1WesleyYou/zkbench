@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"sort"
 
 	"github.com/samuel/go-zookeeper/zk"
 )
@@ -42,6 +43,12 @@ type Benchmark struct {
 	initialized bool
 	BenchConfig
 }
+
+type int64Slice []int64
+
+func (p int64Slice) Len() int           { return len(p) }
+func (p int64Slice) Less(i, j int) bool { return p[i] < p[j] }
+func (p int64Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
 func (self BenchType) String() string {
 	switch self {
@@ -99,7 +106,7 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 		panic(err)
 	}
 	if !nonstop || iter == 1 {
-		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,total_latency,throughput\n")
+		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,99th_latency,total_latency,throughput\n")
 	}
 	var rawf *os.File
 	if raw {
@@ -235,6 +242,7 @@ func (self *Benchmark) processRequests(client *Client, optype string, nrequests 
 		reqf(client, zipf, 0, nrequests, false)
 	}
 	stat.EndTime = time.Now()
+	stat.NinetyNinethLatency = SamplePercentile(LatArr2IntArr(stat.Latencies), .99)
 	stat.AvgLatency = stat.TotalLatency / time.Duration(stat.Ops)
 	stat.Throughput = float64(stat.Ops) / stat.TotalLatency.Seconds()
 
@@ -429,9 +437,9 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	// dump client stats
 	for _, client := range self.clients {
 		stat := client.Stat
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%s,%f\n", client.Id, btype.String(), run, stat.Ops,
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%f\n", client.Id, btype.String(), run, stat.Ops,
 			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
-			stat.MaxLatency.Nanoseconds(), stat.TotalLatency.String(), stat.Throughput))
+			stat.MaxLatency.Nanoseconds(), stat.NinetyNinethLatency, stat.TotalLatency.String(), stat.Throughput))
 	}
 	if rawf != nil {
 		for _, client := range self.clients {
@@ -446,6 +454,39 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 			}
 		}
 	}
+}
+
+//CHANG: test on https://play.golang.org/p/zJ_4MktkMzg
+func SamplePercentile(values int64Slice, perc float64) int64 {
+	ps := []float64{perc}
+
+	scores := make([]int64, len(ps))
+	size := len(values)
+	if size > 0 {
+	    sort.Sort(values)
+		for i, p := range ps {
+		    pos := p * float64(size+1) //ALTERNATIVELY, DROP THE +1
+		    if pos < 1.0 {
+			    scores[i] = int64(values[0])
+				} else if pos >= float64(size) {
+				    scores[i] = int64(values[size-1])
+				} else {
+				    lower := int64(values[int(pos)-1])
+				    scores[i] = lower
+				}
+		    }
+		}
+    return scores[0]
+}
+
+func LatArr2IntArr(oldArr []BenchLatency) int64Slice {
+	var newArr []int64
+    
+    for i := range oldArr {
+		newArr = append(newArr, int64(oldArr[i].Latency.Nanoseconds()))
+	}
+
+    return newArr
 }
 
 func (self *Benchmark) SmokeTest() {

@@ -19,6 +19,7 @@ type BenchStat struct {
 	MinLatency   time.Duration
 	MaxLatency   time.Duration
 	AvgLatency   time.Duration
+	NinetyNinethLatency  int64
 	TotalLatency time.Duration
 	Throughput   float64
 }
