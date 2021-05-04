@@ -461,12 +461,15 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 		lastSecond := -1
 		for _, second := range sortedSeconds {
 			if lastSecond == -1 {
+				for i := 0; i < second; i++ {
+					statf.WriteString("0:")
+				}
 				lastSecond = second
 			} else {  // lastSecond != second
-				for i := 0; i < second - lastSecond - 1; i++ {
-					statf.WriteString(":0")
-				}
 				statf.WriteString(":")
+				for i := 0; i < second - lastSecond - 1; i++ {
+					statf.WriteString("0:")
+				}
 			}
 			statf.WriteString(fmt.Sprintf("%d", secondMap[second]))
 			lastSecond = second
