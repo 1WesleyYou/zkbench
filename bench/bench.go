@@ -106,7 +106,7 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 		panic(err)
 	}
 	if !nonstop || iter == 1 {
-		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,99th_latency,total_latency,throughput,throughput_every_sec\n")
+		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,99th_latency,total_latency,throughput,group_start_time,throughput_every_sec\n")
 	}
 	var rawf *os.File
 	if raw {
@@ -384,6 +384,7 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 		wg.Done()
 	}
 
+	groupStartTime := time.Now()
 	for _, client := range self.clients {
 		// since each run of a benchmark type is independent
 		// and that at the end of this function stat will be
@@ -437,15 +438,16 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	// dump client stats
 	for _, client := range self.clients {
 		stat := client.Stat
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%f,", client.Id, btype.String(), run, stat.Ops,
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%f,%s,", client.Id, btype.String(), run, stat.Ops,
 			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
-			stat.MaxLatency.Nanoseconds(), stat.NinetyNinethLatency, stat.TotalLatency.String(), stat.Throughput))
+			stat.MaxLatency.Nanoseconds(), stat.NinetyNinethLatency, stat.TotalLatency.String(), stat.Throughput,
+			groupStartTime.UTC().Format("2006-01-02T15:04:05.999999Z")))
 
 		// output throughput for every second
 
 		secondMap := make(map[int]int)
 		for _, latency := range stat.Latencies {
-			second := int(latency.Start.Add(latency.Latency).Sub(stat.StartTime).Seconds())
+			second := int(latency.Start.Add(latency.Latency).Sub(groupStartTime).Seconds())
 			secondMap[second] += 1
 		}
 		// fmt.Println(secondMap)
