@@ -106,7 +106,7 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 		panic(err)
 	}
 	if !nonstop || iter == 1 {
-		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,99th_latency,total_latency,throughput\n")
+		summaryf.WriteString("client_id,bench_type,run,operations,errors,average_latency,min_latency,max_latency,99th_latency,total_latency,throughput,throughput_every_sec\n")
 	}
 	var rawf *os.File
 	if raw {
@@ -437,9 +437,40 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 	// dump client stats
 	for _, client := range self.clients {
 		stat := client.Stat
-		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%f\n", client.Id, btype.String(), run, stat.Ops,
+		statf.WriteString(fmt.Sprintf("%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%f,", client.Id, btype.String(), run, stat.Ops,
 			stat.Errors, stat.AvgLatency.Nanoseconds(), stat.MinLatency.Nanoseconds(),
 			stat.MaxLatency.Nanoseconds(), stat.NinetyNinethLatency, stat.TotalLatency.String(), stat.Throughput))
+
+		// output throughput for every second
+
+		secondMap := make(map[int]int)
+		for _, latency := range stat.Latencies {
+			second := int(latency.Start.Add(latency.Latency).Sub(stat.StartTime).Seconds())
+			secondMap[second] += 1
+		}
+		// fmt.Println(secondMap)
+
+		sortedSeconds := make([]int, 0, len(secondMap))
+		for k := range secondMap {
+			sortedSeconds = append(sortedSeconds, k)
+		}
+		sort.Ints(sortedSeconds)
+
+		lastSecond := -1
+		for _, second := range sortedSeconds {
+			if lastSecond == -1 {
+				lastSecond = second
+			} else {  // lastSecond != second
+				for i := 0; i < second - lastSecond - 1; i++ {
+					statf.WriteString(":0")
+				}
+				statf.WriteString(":")
+			}
+			statf.WriteString(fmt.Sprintf("%d", secondMap[second]))
+			lastSecond = second
+		}
+
+		statf.WriteString("\n")
 	}
 	if rawf != nil {
 		for _, client := range self.clients {
