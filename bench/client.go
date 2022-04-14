@@ -10,11 +10,15 @@ import (
 )
 
 type Client struct {
-	Id        string
+	Id        int
+	Name      string
 	Server    string
 	Namespace string
 	EndPoint  string
 	Conn      *zk.Conn
+
+	Stat     *BenchStat // the stats for requests issued by this client
+	Children []*Client  // a client may have multiple child clients to launch concurrent requests
 }
 
 var (
@@ -29,7 +33,7 @@ func (l *ConnLogger) Printf(string, ...interface{}) {
 }
 
 func (self *Client) Log(spec string, args ...interface{}) {
-	prefix := fmt.Sprintf("[Client %s->%s]: %s\n", self.Id, self.EndPoint, spec)
+	prefix := fmt.Sprintf("[Client %s->%s]: %s\n", self.Name, self.EndPoint, spec)
 	log.Printf(prefix, args...)
 }
 
@@ -166,7 +170,7 @@ func (self *Client) Setup() error {
 		return err
 	}
 	if !exists {
-		err = self.CreateR("", []byte("I am client "+self.Id))
+		err = self.CreateR("", []byte("I am client "+self.Name))
 	}
 	return err
 }
@@ -197,14 +201,48 @@ func (self *Client) Reconnect() error {
 	return nil
 }
 
-func NewClient(id string, server string, endpoint string, namespace string) (*Client, error) {
+func (self *Client) AddChildren(n int) error {
+	if self.Children == nil {
+		self.Children = make([]*Client, 0, n)
+	}
+	for i := 0; i < n; i++ {
+		child, err := NewClient(self.Id, self.Name, self.Server, self.EndPoint, self.Namespace)
+		if err != nil {
+			self.Log("failed to create child client: %s", err)
+		} else {
+			self.Children = append(self.Children, child)
+		}
+	}
+	return nil
+}
+
+func (self *Client) CloseChildren() {
+	if self.Children == nil {
+		// no child clients, great
+		return
+	}
+	for _, child := range self.Children {
+		child.Conn.Close()
+		child.Conn = nil
+	}
+	self.Children = nil
+}
+
+func (self *Client) GetChild(i int) *Client {
+	if self.Children == nil || i < 0 || i > len(self.Children) {
+		return nil
+	}
+	return self.Children[i]
+}
+
+func NewClient(id int, name string, server string, endpoint string, namespace string) (*Client, error) {
 	conn, _, err := zk.Connect([]string{endpoint}, time.Second)
 	if err != nil {
 		return nil, err
 	}
 	var l ConnLogger
 	conn.SetLogger(&l)
-	return &Client{Id: id, Server: server, Namespace: namespace, EndPoint: endpoint, Conn: conn}, nil
+	return &Client{Id: id, Name: name, Server: server, Namespace: namespace, EndPoint: endpoint, Conn: conn}, nil
 }
 
 func NewClients(servers []string, endpoints []string, nclients int, namespace string) ([]*Client, error) {
@@ -212,7 +250,7 @@ func NewClients(servers []string, endpoints []string, nclients int, namespace st
 	for i := 0; i < nclients; i++ {
 		sid := fmt.Sprintf("%d", i+1)
 		ns := namespace + "/client" + sid
-		client, err := NewClient(sid, servers[i%len(servers)], endpoints[i%len(endpoints)], ns)
+		client, err := NewClient(i+1, sid, servers[i%len(servers)], endpoints[i%len(endpoints)], ns)
 		if err != nil {
 			return nil, err
 		}
