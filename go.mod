@@ -1,4 +1,4 @@
-module github.com/OrderLab/go-zkbench
+module github.com/OrderLab/zkbench
 
 go 1.25.2
 

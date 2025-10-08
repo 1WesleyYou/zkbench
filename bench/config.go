@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	zkc "zkbench/config"
+	zkc "github.com/OrderLab/zkbench/config"
 )
 
 type BenchConfig struct {

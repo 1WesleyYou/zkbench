@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	zkb "zkbench/bench"
+	zkb "github.com/OrderLab/zkbench/bench"
 )
 
 var (
