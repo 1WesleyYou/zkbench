@@ -5,10 +5,11 @@ import (
 	"log"
 	mrand "math/rand"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
-	"sort"
 
 	"github.com/samuel/go-zookeeper/zk"
 )
@@ -125,6 +126,8 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 			self.runBench(FILL, 1, summaryf, rawf)   // fill in data
 		}
 	}
+	// Mark the start of main injection just before READ/WRITE/MIXED runs
+	self.markInjectionStart()
 	// runs only apply to the actual benchmark
 	for i := 0; i < self.Runs; i++ {
 		if self.Type&READ != 0 {
@@ -141,6 +144,30 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 	if rawf != nil {
 		rawf.Close()
 	}
+}
+
+// markInjectionStart writes a single-line local timestamp to a fixed file path
+// relative to the zkbench binary location: ../../agent/metrics/main_injection_timestamp.txt
+// This avoids external dependencies and keeps behavior simple and consistent.
+func (self *Benchmark) markInjectionStart() {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exeDir := filepath.Dir(exePath)
+	// Build fixed path: repoRoot/agent/metrics/main_injection_timestamp.txt
+	outPath := filepath.Clean(filepath.Join(exeDir, "../../agent/metrics/main_injection_timestamp.txt"))
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return
+	}
+	now := time.Now().Format("2006-01-02 15:04:05.000")
+	f, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString("inj," + now + "\n")
 }
 
 func (self *Benchmark) processRequests(client *Client, optype string, nrequests int64,
@@ -465,9 +492,9 @@ func (self *Benchmark) runBench(btype BenchType, run int, statf *os.File, rawf *
 					statf.WriteString("0:")
 				}
 				lastSecond = second
-			} else {  // lastSecond != second
+			} else { // lastSecond != second
 				statf.WriteString(":")
-				for i := 0; i < second - lastSecond - 1; i++ {
+				for i := 0; i < second-lastSecond-1; i++ {
 					statf.WriteString("0:")
 				}
 			}
@@ -499,30 +526,30 @@ func SamplePercentile(values int64Slice, perc float64) int64 {
 	scores := make([]int64, len(ps))
 	size := len(values)
 	if size > 0 {
-	    sort.Sort(values)
+		sort.Sort(values)
 		for i, p := range ps {
-		    pos := p * float64(size+1) //ALTERNATIVELY, DROP THE +1
-		    if pos < 1.0 {
-			    scores[i] = int64(values[0])
-				} else if pos >= float64(size) {
-				    scores[i] = int64(values[size-1])
-				} else {
-				    lower := int64(values[int(pos)-1])
-				    scores[i] = lower
-				}
-		    }
+			pos := p * float64(size+1) //ALTERNATIVELY, DROP THE +1
+			if pos < 1.0 {
+				scores[i] = int64(values[0])
+			} else if pos >= float64(size) {
+				scores[i] = int64(values[size-1])
+			} else {
+				lower := int64(values[int(pos)-1])
+				scores[i] = lower
+			}
 		}
-    return scores[0]
+	}
+	return scores[0]
 }
 
 func LatArr2IntArr(oldArr []BenchLatency) int64Slice {
 	var newArr []int64
-    
-    for i := range oldArr {
+
+	for i := range oldArr {
 		newArr = append(newArr, int64(oldArr[i].Latency.Nanoseconds()))
 	}
 
-    return newArr
+	return newArr
 }
 
 func (self *Benchmark) SmokeTest() {
