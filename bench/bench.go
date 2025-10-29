@@ -127,7 +127,7 @@ func (self *Benchmark) Run(outprefix string, raw bool, nonstop bool, iter int64)
 		}
 	}
 	// Mark the start of main injection just before READ/WRITE/MIXED runs
-	self.markInjectionStart()
+	// self.markInjectionStart()
 	// runs only apply to the actual benchmark
 	for i := 0; i < self.Runs; i++ {
 		if self.Type&READ != 0 {
