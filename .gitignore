@@ -3,3 +3,4 @@ build
 zkbench
 *.log
 *.dat
+*.png
