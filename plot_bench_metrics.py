@@ -26,8 +26,8 @@ def main():
         for row in reader:
             btype = row['bench_type']
             
-            # Only process READ and WRITE
-            if btype not in ['READ', 'WRITE']:
+            # Only process READ, WRITE, and MIXED
+            if btype not in ['READ', 'WRITE', 'MIXED']:
                 continue
             
             # Parse timestamp (default 8-digit microseconds from Go)
@@ -79,7 +79,9 @@ def main():
             # Sum throughput across all clients at this timestamp
             throughputs.append(sum(data['throughput']))
             timestamps.append(ts)
-        
+
+        print("a", len(throughputs), throughputs)
+
         # Convert timestamps to relative seconds from start
         if timestamps:
             start_ts = timestamps[0]
