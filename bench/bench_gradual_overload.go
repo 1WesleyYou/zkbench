@@ -271,10 +271,12 @@ func (gb *GradualOverloadBenchmark) runWorkloadStep(requestsPerSec int64, durati
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	aggregatedStats := &BenchStat{}
+	iter := 0
 	
 	// Distribute load across clients
 	for _, client := range gb.clients {
 		wg.Add(1)
+		iter++
 		go func(c *Client) {
 			defer wg.Done()
 			

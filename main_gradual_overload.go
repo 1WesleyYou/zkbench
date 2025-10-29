@@ -10,18 +10,18 @@ import (
 	zkb "github.com/OrderLab/zkbench/bench"
 )
 
-var (
-	conf      = flag.String("conf", "bench_gradual_overload.conf", "Benchmark configuration file")
-	outprefix = flag.String("outprefix", "zkresult", "Benchmark stat filename prefix")
-	visualize = flag.Bool("viz", true, "Generate visualization data")
-)
+// var (
+// 	conf      = flag.String("conf", "bench_gradual_overload.conf", "Benchmark configuration file")
+// 	outprefix = flag.String("outprefix", "zkresult", "Benchmark stat filename prefix")
+// 	visualize = flag.Bool("viz", true, "Generate visualization data")
+// )
 
-type logWriter struct {
-}
+// type logWriter struct {
+// }
 
-func (writer logWriter) Write(bytes []byte) (int, error) {
-	return fmt.Print(time.Now().UTC().Format("2006-01-02T15:04:05.999Z") + " " + string(bytes))
-}
+// func (writer logWriter) Write(bytes []byte) (int, error) {
+// 	return fmt.Print(time.Now().UTC().Format("2006-01-02T15:04:05.999Z") + " " + string(bytes))
+// }
 
 func main() {
 	flag.Parse()
@@ -97,10 +97,10 @@ func main() {
 	log.Println("Gradual Overload Test Complete")
 	log.Println("===========================================")
 	
-	// Generate visualization script if requested
-	if *visualize {
-		generateVisualizationScript(prefix)
-	}
+	// // Generate visualization script if requested
+	// if *visualize {
+	// 	generateVisualizationScript(prefix)
+	// }
 	
 	// Cleanup if configured
 	if b.Cleanup {
