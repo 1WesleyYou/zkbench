@@ -16,6 +16,10 @@ type Client struct {
 	Namespace string
 	EndPoint  string
 	Conn      *zk.Conn
+	// CleanupNamespace controls whether Cleanup() removes the namespace subtree.
+	// Keep this enabled for regular clients. It can be disabled for clients that
+	// intentionally share a namespace to avoid duplicate delete attempts.
+	CleanupNamespace bool
 
 	Stat     *BenchStat // the stats for requests issued by this client
 	Children []*Client  // a client may have multiple child clients to launch concurrent requests
@@ -179,7 +183,10 @@ func (self *Client) Cleanup() error {
 	if self.Conn == nil {
 		return nil
 	}
-	err := self.DeleteR("")
+	var err error
+	if self.CleanupNamespace {
+		err = self.DeleteR("")
+	}
 	self.Conn.Close()
 	self.Conn = nil
 	return err
@@ -242,7 +249,15 @@ func NewClient(id int, name string, server string, endpoint string, namespace st
 	}
 	var l ConnLogger
 	conn.SetLogger(&l)
-	return &Client{Id: id, Name: name, Server: server, Namespace: namespace, EndPoint: endpoint, Conn: conn}, nil
+	return &Client{
+		Id:               id,
+		Name:             name,
+		Server:           server,
+		Namespace:        namespace,
+		EndPoint:         endpoint,
+		Conn:             conn,
+		CleanupNamespace: true,
+	}, nil
 }
 
 func NewClients(servers []string, endpoints []string, nclients int, namespace string) ([]*Client, error) {
@@ -253,6 +268,26 @@ func NewClients(servers []string, endpoints []string, nclients int, namespace st
 		client, err := NewClient(i+1, sid, servers[i%len(servers)], endpoints[i%len(endpoints)], ns)
 		if err != nil {
 			return nil, err
+		}
+		clients[i] = client
+	}
+	return clients, nil
+}
+
+// NewClientsForSharedZnode creates clients that share the same namespace.
+// This is useful for hotspot-style workloads where all clients read/write the
+// same relative znode path.
+func NewClientsForSharedZnode(servers []string, endpoints []string, nclients int, namespace string) ([]*Client, error) {
+	clients := make([]*Client, nclients)
+	for i := 0; i < nclients; i++ {
+		sid := fmt.Sprintf("%d", i+1)
+		client, err := NewClient(i+1, sid, servers[i%len(servers)], endpoints[i%len(endpoints)], namespace)
+		if err != nil {
+			return nil, err
+		}
+		// Only one client removes the shared namespace during cleanup.
+		if i > 0 {
+			client.CleanupNamespace = false
 		}
 		clients[i] = client
 	}
