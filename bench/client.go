@@ -48,6 +48,16 @@ func (self *Client) Read(rpath string) ([]byte, *zk.Stat, error) {
 	return self.Conn.Get(self.Namespace + "/" + rpath)
 }
 
+// GetW reads a znode and sets a watch for data changes. Used to induce watch storms
+// when many clients watch the same path and writers update it.
+func (self *Client) GetW(rpath string) ([]byte, *zk.Stat, <-chan zk.Event, error) {
+	p := self.Namespace
+	if len(rpath) > 0 {
+		p = self.Namespace + "/" + rpath
+	}
+	return self.Conn.GetW(p)
+}
+
 func (self *Client) Write(rpath string, data []byte) error {
 	var err error
 	if len(rpath) == 0 {
