@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/samuel/go-zookeeper/zk"
@@ -16,6 +17,7 @@ type Client struct {
 	Namespace string
 	EndPoint  string
 	Conn      *zk.Conn
+	connMu    sync.RWMutex
 	// CleanupNamespace controls whether Cleanup() removes the namespace subtree.
 	// Keep this enabled for regular clients. It can be disabled for clients that
 	// intentionally share a namespace to avoid duplicate delete attempts.
@@ -41,44 +43,67 @@ func (self *Client) Log(spec string, args ...interface{}) {
 	log.Printf(prefix, args...)
 }
 
+func (self *Client) currentConn() *zk.Conn {
+	self.connMu.RLock()
+	conn := self.Conn
+	self.connMu.RUnlock()
+	return conn
+}
+
 func (self *Client) Read(rpath string) ([]byte, *zk.Stat, error) {
-	if len(rpath) == 0 {
-		return self.Conn.Get(self.Namespace)
+	conn := self.currentConn()
+	if conn == nil {
+		return nil, nil, zk.ErrNoServer
 	}
-	return self.Conn.Get(self.Namespace + "/" + rpath)
+	if len(rpath) == 0 {
+		return conn.Get(self.Namespace)
+	}
+	return conn.Get(self.Namespace + "/" + rpath)
 }
 
 // GetW reads a znode and sets a watch for data changes. Used to induce watch storms
 // when many clients watch the same path and writers update it.
 func (self *Client) GetW(rpath string) ([]byte, *zk.Stat, <-chan zk.Event, error) {
+	conn := self.currentConn()
+	if conn == nil {
+		return nil, nil, nil, zk.ErrNoServer
+	}
 	p := self.Namespace
 	if len(rpath) > 0 {
 		p = self.Namespace + "/" + rpath
 	}
-	return self.Conn.GetW(p)
+	return conn.GetW(p)
 }
 
 func (self *Client) Write(rpath string, data []byte) error {
+	conn := self.currentConn()
+	if conn == nil {
+		return zk.ErrNoServer
+	}
 	var err error
 	if len(rpath) == 0 {
-		_, err = self.Conn.Set(self.Namespace, data, -1)
+		_, err = conn.Set(self.Namespace, data, -1)
 	} else {
-		_, err = self.Conn.Set(self.Namespace+"/"+rpath, data, -1)
+		_, err = conn.Set(self.Namespace+"/"+rpath, data, -1)
 	}
 	return err
 }
 
 func (self *Client) ReadWrite(rpath string, data []byte) error {
+	conn := self.currentConn()
+	if conn == nil {
+		return zk.ErrNoServer
+	}
 	if len(rpath) == 0 {
 		rpath = self.Namespace
 	} else {
 		rpath = self.Namespace + "/" + rpath
 	}
-	_, stat, err := self.Conn.Get(rpath)
+	_, stat, err := conn.Get(rpath)
 	if err != nil {
 		return err
 	}
-	_, err = self.Conn.Set(rpath, data, stat.Version)
+	_, err = conn.Set(rpath, data, stat.Version)
 	return err
 }
 
@@ -190,6 +215,8 @@ func (self *Client) Setup() error {
 }
 
 func (self *Client) Cleanup() error {
+	self.connMu.Lock()
+	defer self.connMu.Unlock()
 	if self.Conn == nil {
 		return nil
 	}
@@ -203,10 +230,11 @@ func (self *Client) Cleanup() error {
 }
 
 func (self *Client) Reconnect() error {
-	if self.Conn == nil {
-		return nil
+	self.connMu.Lock()
+	defer self.connMu.Unlock()
+	if self.Conn != nil {
+		self.Conn.Close()
 	}
-	self.Conn.Close()
 	self.Conn = nil
 	conn, _, err := zk.Connect([]string{self.EndPoint}, time.Second)
 	if err != nil {
